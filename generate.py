@@ -4,7 +4,6 @@ import json
 with open("sanying_timetable.json", "r", encoding="utf-8-sig") as f:
   full_data = json.load(f)
 
-# 2. 定義三鶯線標準站點順序 (LB01 -> LB12)
 stations_ordered = [
     ("LB01", "頂埔"),
     ("LB02", "媽祖田"),
@@ -22,49 +21,137 @@ stations_ordered = [
 station_map = {s_id: s_name for s_id, s_name in stations_ordered}
 station_indices = {s_id: idx for idx, (s_id, _) in enumerate(stations_ordered)}
 
-# 3. 完全相信資料：以車次 Sequence 與方向建立精準的對應索引
-# 結構：trips_lookup[trip_key] = { DestinationName, Sequence, DepartureTime, Stops: [...] }
-trips_lookup = {}
+
+def time_to_min(t_str):
+  if not t_str or ":" not in t_str:
+    return -1
+  h, m = map(int, t_str.split(":"))
+  return h * 60 + m
+
+
+# 2. 核心邏輯：先收集各方向所有出現過的時間點，並以時間先後排序作為真正的主車次！
+# 結構：dest_id -> [ dep_time1, dep_time2, ... ]
+direction_trips = {"LB12": set(), "LB01": set()}
 
 for station in full_data:
-  s_id = station["StationID"]
-  s_name = station["StationName"]["Zh_tw"]
   dest_id = station["DestinationStaionID"]
-  dest_name = station["DestinationStationName"]["Zh_tw"]
+  if dest_id in direction_trips:
+    for t in station.get("Timetables", []):
+      direction_trips[dest_id].add(t["DepartureTime"])
+
+# 為每個方向建立按時間排序的車次清單
+sorted_master_trips = {}
+for dest_id, times in direction_trips.items():
+  # 依時間先後排序
+  sorted_times = sorted(list(times), key=time_to_min)
+  sorted_master_trips[dest_id] = sorted_times
+
+# 3. 建立全域快速查詢: time_lookup[station_id][dest_id][dep_time] = timetable_item
+time_lookup = {}
+for station in full_data:
+  s_id = station["StationID"]
+  dest_id = station["DestinationStaionID"]
+  if s_id not in time_lookup:
+    time_lookup[s_id] = {}
+  if dest_id not in time_lookup[s_id]:
+    time_lookup[s_id][dest_id] = {}
 
   for t in station.get("Timetables", []):
-    seq = t["Sequence"]
-    dep_time = t["DepartureTime"]
+    time_lookup[s_id][dest_id][t["DepartureTime"]] = t
 
-    # 每個車次以 終點站 + 發車時間 + 序號 作為唯一識別
-    trip_key = f"{dest_id}_{dep_time}_{seq}"
+# 4. 依照「先排時刻，再給予車次編號」的完美流程建構 trips_lookup
+trips_lookup = {}
 
-    if trip_key not in trips_lookup:
-      trips_lookup[trip_key] = {
-          "DestinationName": dest_name,
-          "Sequence": seq,
-          "DepartureTime": dep_time,
-          "Stops": [],
-      }
+for dest_id, times in sorted_master_trips.items():
+  dest_name = (
+      "鶯桃福德"
+      if dest_id == "LB12"
+      else (
+          "頂埔"
+          if dest_id == "LB01"
+          else full_data[0]["DestinationStationName"]["Zh_tw"]
+      )
+  )
 
-    # 直接收集該站點資料
-    trips_lookup[trip_key]["Stops"].append({
-        "StationID": s_id,
-        "StationName": s_name,
-        "ArrivalTime": t["ArrivalTime"],
-        "DepartureTime": t["DepartureTime"],
-        "Index": station_indices.get(s_id, 0),
-    })
+  for idx, base_time in enumerate(times):
+    seq_id = idx + 1  # 重新賦予乾淨的車次編號 (#1, #2, #3...)
+    trip_key = f"{dest_id}_{base_time}_{seq_id}"
 
-# 讓每一班車的停靠站嚴格依照三鶯線物理順序（LB01 -> LB12）排列
-for k in trips_lookup:
-  trips_lookup[k]["Stops"].sort(key=lambda x: x["Index"])
+    # 我們以這個基準時間，推導該車次在各站的真實時間
+    # 邏輯：從這班車發車的車站開始，前後依序尋找時間合理的站點
+    stops = []
 
-# 4. 轉成 JSON 格式
+    # 尋找在哪一站有這個發車時間
+    found_start_station = None
+    for s_id, _ in stations_ordered:
+      if (
+          s_id in time_lookup
+          and dest_id in time_lookup[s_id]
+          and base_time in time_lookup[s_id][dest_id]
+      ):
+        found_start_station = s_id
+        break
+
+    # 如果找到起點或基準站，我們直接把整條線各站實際有發車/到站記錄的抓出來
+    # 為了最安全，我們直接檢查每一站有沒有時間大約在合理區間內的紀錄
+    current_ref_min = time_to_min(base_time)
+
+    collected_stops = []
+    is_heading_yingge = dest_id == "LB12"
+    check_stations = (
+        stations_ordered if is_heading_yingge else list(reversed(stations_ordered))
+    )
+
+    # 尋找整條線上對應這班車的合理時間點
+    for s_id, s_name in check_stations:
+      if s_id in time_lookup and dest_id in time_lookup[s_id]:
+        station_t_map = time_lookup[s_id][dest_id]
+        # 尋找時間最接近且合理的班次（允許時間差在合理範圍內）
+        best_match = None
+        min_diff = 999
+        for t_str, t_obj in station_t_map.items():
+          t_min = time_to_min(t_str)
+          # 簡單過濾：同一班車在各站的時間應該是連續遞增/遞減的
+          diff = abs(t_min - current_ref_min)
+          if diff < min_diff and diff <= 15:  # 兩站之間最大差距 15 分鐘內
+            min_diff = diff
+            best_match = t_obj
+
+        if best_match:
+          collected_stops.append({
+              "StationID": s_id,
+              "StationName": s_name,
+              "ArrivalTime": best_match["ArrivalTime"],
+              "DepartureTime": best_match["DepartureTime"],
+              "SortIndex": station_indices[s_id],
+          })
+          current_ref_min = time_to_min(best_match["DepartureTime"])
+
+    # 依照物理順序排好
+    collected_stops.sort(
+        key=lambda x: x["SortIndex"],
+        reverse=(not is_heading_yingge),
+    )
+
+    trips_lookup[trip_key] = {
+        "DestinationName": dest_name,
+        "Sequence": seq_id,
+        "DepartureTime": base_time,
+        "Stops": [
+            {
+                "StationID": s["StationID"],
+                "StationName": s["StationName"],
+                "ArrivalTime": s["ArrivalTime"],
+                "DepartureTime": s["DepartureTime"],
+            }
+            for s in collected_stops
+        ],
+    }
+
+# 5. 輸出 JSON 與 HTML
 json_str = json.dumps(full_data, ensure_ascii=False)
 trips_str = json.dumps(trips_lookup, ensure_ascii=False)
 
-# 5. 組合前端 HTML
 html_content = (
     """<!DOCTYPE html>
 <html lang="zh-TW">
@@ -227,7 +314,7 @@ html_content = (
 
   <div class="calculator">
     <h1>新北捷運三鶯線時刻表</h1>
-    <div class="label-hint">請選擇您想要查詢的車站與行駛方向（點擊任一班次可檢視原始資料停靠站）：</div>
+    <div class="label-hint">請選擇您想要查詢的車站與行駛方向：</div>
 
     <div class="input-group">
       <label for="stationSelect">選擇車站</label>
@@ -274,7 +361,7 @@ html_content = (
   <div class="modal" id="tripModal">
     <div class="modal-content">
       <div class="modal-header">
-        <h3 id="modalTitle">車次原始停靠站</h3>
+        <h3 id="modalTitle">車次行經站</h3>
         <button class="close-btn" id="closeModal">&times;</button>
       </div>
       <div class="modal-body">
@@ -287,7 +374,7 @@ html_content = (
             </tr>
           </thead>
           <tbody id="modalBody">
-            <!-- 動態插入原始資料站點 -->
+            <!-- 動態插入 -->
           </tbody>
         </table>
       </div>
@@ -393,7 +480,7 @@ html_content = (
       });
 
       tbody.innerHTML = html;
-      resultCount.textContent = "查詢結果：共 " + targetData.Timetables.length + " 筆班次 (點擊可看原始停靠站)";
+      resultCount.textContent = "查詢結果：共 " + targetData.Timetables.length + " 筆班次";
 
       setTimeout(() => {
         const highlightedRow = tbody.querySelector('.highlight-row');
@@ -407,7 +494,7 @@ html_content = (
           const tKey = this.getAttribute('data-trip');
           const tripInfo = tripsLookup[tKey];
           if (!tripInfo || !tripInfo.Stops || tripInfo.Stops.length === 0) {
-            alert('查無此車次的詳細停靠紀錄');
+            alert('查無此車次的詳細行經站紀錄');
             return;
           }
 
@@ -440,8 +527,7 @@ html_content = (
 """
 )
 
-# 6. 輸出成 index.html
 with open("index.html", "w", encoding="utf-8") as f:
   f.write(html_content)
 
-print("成功產生完全基於原始資料對應、絕不亂猜的 index.html！")
+print("成功產生以時間排序為主軸、重新生成車次的乾淨 index.html！")
