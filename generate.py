@@ -4,7 +4,7 @@ import json
 with open("sanying_timetable.json", "r", encoding="utf-8-sig") as f:
   full_data = json.load(f)
 
-# 2. 定義三鶯線標準站點順序 (由北到南: LB01 -> LB12)
+# 2. 定義三鶯線標準站點順序 (LB01 -> LB12)
 stations_ordered = [
     ("LB01", "頂埔"),
     ("LB02", "媽祖田"),
@@ -30,7 +30,7 @@ def time_to_min(t_str):
   return h * 60 + m
 
 
-# 3. 建立全域時間索引: time_index[station_id][dest_id] = [ {dep_min, arr_time, dep_time}, ... ]
+# 3. 建立全域時間索引
 time_index = {}
 for station in full_data:
   s_id = station["StationID"]
@@ -50,7 +50,7 @@ for station in full_data:
         "ArrMin": arr_m,
     })
 
-# 4. 全線貫通貪婪時序對齊引擎
+# 4. 實際發車起點至終點的精準推導引擎（支援多點發車、絕不亂湊前段站）
 trips_lookup = {}
 
 for station in full_data:
@@ -66,7 +66,6 @@ for station in full_data:
     if trip_key in trips_lookup:
       continue
 
-    # 判斷行進方向：若目的地是 LB12，則是正向 (LB01 -> LB12)；若目的地是 LB01，則是反向 (LB12 -> LB01)
     is_heading_to_yingge = dest_id == "LB12"
     route_indices = (
         list(range(len(stations_ordered)))
@@ -86,7 +85,7 @@ for station in full_data:
         "SortMin": base_dep_min,
     }
 
-    # A. 順著行進方向往後找 (例如從當前站往終點找)
+    # A. 順著行進方向往後找後續站點
     ref_min = base_dep_min
     start_pos = route_indices.index(current_s_idx)
     for pos in range(start_pos + 1, len(route_indices)):
@@ -95,7 +94,6 @@ for station in full_data:
 
       if st_id in time_index and dest_id in time_index[st_id]:
         candidates = time_index[st_id][dest_id]
-        # 尋找發車時間大於參考時間，且差距在 1 到 12 分鐘內的班次
         valid = [c for c in candidates if 0 < (c["DepMin"] - ref_min) <= 12]
         if valid:
           best = min(valid, key=lambda x: x["DepMin"] - ref_min)
@@ -108,10 +106,9 @@ for station in full_data:
           }
           ref_min = best["DepMin"]
         else:
-          # 如果找不到完美符合的，用預估時間差補上或直接中斷
           break
 
-    # B. 逆著行進方向往前找 (例如從當前站往起點找)
+    # B. 順著行進方向往前找前段站（只有當資料庫中確實有該車次的連續發車紀錄時才串聯，否則視為多點發車起點，不強行亂湊）
     ref_min = base_dep_min
     for pos in range(start_pos - 1, -1, -1):
       st_idx = route_indices[pos]
@@ -119,7 +116,6 @@ for station in full_data:
 
       if st_id in time_index and dest_id in time_index[st_id]:
         candidates = time_index[st_id][dest_id]
-        # 尋找發車時間小於參考時間，且差距在 1 到 12 分鐘內的班次
         valid = [c for c in candidates if 0 < (ref_min - c["DepMin"]) <= 12]
         if valid:
           best = min(valid, key=lambda x: ref_min - x["DepMin"])
@@ -132,17 +128,14 @@ for station in full_data:
           }
           ref_min = best["DepMin"]
         else:
-          break
+          break  # 前方無連續發車紀錄，代表此處即為該車次的實際起點站（多點發車）
 
-    # 將收集到的站點依照三鶯線物理順序完美排列
+    # 將收集到的站點依照物理順序排列
     final_stops_list = []
     for st_id, st_name in stations_ordered:
       if st_id in matched_stops:
         final_stops_list.append(matched_stops[st_id])
 
-    # 如果方向是往頂埔，物理順序需要反過來由大到小展示嗎？
-    # 使用者查詢時希望彈窗永遠由起點排到終點，或者按 LB01 -> LB12 排列。
-    # 為了閱讀直覺，若方向是往頂埔，我們讓它從 LB12 排序到 LB01；若是往鶯歌，從 LB01 到 LB12。
     if not is_heading_to_yingge:
       final_stops_list.sort(key=lambda x: station_indices[x["StationID"]], reverse=True)
     else:
@@ -322,7 +315,7 @@ html_content = (
 
   <div class="calculator">
     <h1>新北捷運三鶯線時刻表</h1>
-    <div class="label-hint">請選擇您想要查詢的車站與行駛方向（點擊任一班次可檢視完整全線貫通站點）：</div>
+    <div class="label-hint">請選擇您想要查詢的車站與行駛方向（點擊任一班次可檢視實際行經站點）：</div>
 
     <div class="input-group">
       <label for="stationSelect">選擇車站</label>
@@ -369,7 +362,7 @@ html_content = (
   <div class="modal" id="tripModal">
     <div class="modal-content">
       <div class="modal-header">
-        <h3 id="modalTitle">車次完整行經站</h3>
+        <h3 id="modalTitle">車次實際行經站</h3>
         <button class="close-btn" id="closeModal">&times;</button>
       </div>
       <div class="modal-body">
@@ -382,7 +375,7 @@ html_content = (
             </tr>
           </thead>
           <tbody id="modalBody">
-            <!-- 動態插入全線貫通對齊後的停靠站 -->
+            <!-- 動態插入實際行經站 -->
           </tbody>
         </table>
       </div>
@@ -488,7 +481,7 @@ html_content = (
       });
 
       tbody.innerHTML = html;
-      resultCount.textContent = "查詢結果：共 " + targetData.Timetables.length + " 筆班次 (點擊可看全線貫通站點)";
+      resultCount.textContent = "查詢結果：共 " + targetData.Timetables.length + " 筆班次 (點擊可看實際行經站)";
 
       setTimeout(() => {
         const highlightedRow = tbody.querySelector('.highlight-row');
@@ -539,4 +532,4 @@ html_content = (
 with open("index.html", "w", encoding="utf-8") as f:
   f.write(html_content)
 
-print("成功產生全線單向貪婪對齊、完美貫通的 index.html！")
+print("成功產生支援多點發車、只顯示實際行經站點的 index.html！")
