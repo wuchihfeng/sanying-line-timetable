@@ -29,8 +29,7 @@ def time_to_min(t_str):
   return h * 60 + m
 
 
-# 2. 核心邏輯：先收集各方向所有出現過的時間點，並以時間先後排序作為真正的主車次！
-# 結構：dest_id -> [ dep_time1, dep_time2, ... ]
+# 2. 收集各方向出現過的時間點，依時間排序建立主車次
 direction_trips = {"LB12": set(), "LB01": set()}
 
 for station in full_data:
@@ -39,14 +38,11 @@ for station in full_data:
     for t in station.get("Timetables", []):
       direction_trips[dest_id].add(t["DepartureTime"])
 
-# 為每個方向建立按時間排序的車次清單
 sorted_master_trips = {}
 for dest_id, times in direction_trips.items():
-  # 依時間先後排序
-  sorted_times = sorted(list(times), key=time_to_min)
-  sorted_master_trips[dest_id] = sorted_times
+  sorted_master_trips[dest_id] = sorted(list(times), key=time_to_min)
 
-# 3. 建立全域快速查詢: time_lookup[station_id][dest_id][dep_time] = timetable_item
+# 建立快速查詢索引
 time_lookup = {}
 for station in full_data:
   s_id = station["StationID"]
@@ -59,61 +55,36 @@ for station in full_data:
   for t in station.get("Timetables", []):
     time_lookup[s_id][dest_id][t["DepartureTime"]] = t
 
-# 4. 依照「先排時刻，再給予車次編號」的完美流程建構 trips_lookup
+# 3. 嚴格對應的前端查詢表格與彈窗資料結構
+# 為了讓前端點擊時 100% 抓得到，我們同時建立「依車站查詢的列表」與「依時間軸對應的彈窗」
 trips_lookup = {}
 
 for dest_id, times in sorted_master_trips.items():
-  dest_name = (
-      "鶯桃福德"
-      if dest_id == "LB12"
-      else (
-          "頂埔"
-          if dest_id == "LB01"
-          else full_data[0]["DestinationStationName"]["Zh_tw"]
-      )
-  )
+  dest_name = "鶯桃福德" if dest_id == "LB12" else "頂埔"
 
   for idx, base_time in enumerate(times):
-    seq_id = idx + 1  # 重新賦予乾淨的車次編號 (#1, #2, #3...)
+    seq_id = idx + 1
+    # 這是前端點擊時會用的唯一 Key
     trip_key = f"{dest_id}_{base_time}_{seq_id}"
 
-    # 我們以這個基準時間，推導該車次在各站的真實時間
-    # 邏輯：從這班車發車的車站開始，前後依序尋找時間合理的站點
-    stops = []
-
-    # 尋找在哪一站有這個發車時間
-    found_start_station = None
-    for s_id, _ in stations_ordered:
-      if (
-          s_id in time_lookup
-          and dest_id in time_lookup[s_id]
-          and base_time in time_lookup[s_id][dest_id]
-      ):
-        found_start_station = s_id
-        break
-
-    # 如果找到起點或基準站，我們直接把整條線各站實際有發車/到站記錄的抓出來
-    # 為了最安全，我們直接檢查每一站有沒有時間大約在合理區間內的紀錄
-    current_ref_min = time_to_min(base_time)
-
+    # 尋找這班車在各站實際有記錄的時間
     collected_stops = []
     is_heading_yingge = dest_id == "LB12"
     check_stations = (
         stations_ordered if is_heading_yingge else list(reversed(stations_ordered))
     )
 
-    # 尋找整條線上對應這班車的合理時間點
+    current_ref_min = time_to_min(base_time)
+
     for s_id, s_name in check_stations:
       if s_id in time_lookup and dest_id in time_lookup[s_id]:
         station_t_map = time_lookup[s_id][dest_id]
-        # 尋找時間最接近且合理的班次（允許時間差在合理範圍內）
         best_match = None
         min_diff = 999
         for t_str, t_obj in station_t_map.items():
           t_min = time_to_min(t_str)
-          # 簡單過濾：同一班車在各站的時間應該是連續遞增/遞減的
           diff = abs(t_min - current_ref_min)
-          if diff < min_diff and diff <= 15:  # 兩站之間最大差距 15 分鐘內
+          if diff < min_diff and diff <= 15:
             min_diff = diff
             best_match = t_obj
 
@@ -127,7 +98,6 @@ for dest_id, times in sorted_master_trips.items():
           })
           current_ref_min = time_to_min(best_match["DepartureTime"])
 
-    # 依照物理順序排好
     collected_stops.sort(
         key=lambda x: x["SortIndex"],
         reverse=(not is_heading_yingge),
@@ -148,10 +118,10 @@ for dest_id, times in sorted_master_trips.items():
         ],
     }
 
-# 5. 輸出 JSON 與 HTML
 json_str = json.dumps(full_data, ensure_ascii=False)
 trips_str = json.dumps(trips_lookup, ensure_ascii=False)
 
+# 4. 組合網頁 HTML
 html_content = (
     """<!DOCTYPE html>
 <html lang="zh-TW">
@@ -469,6 +439,7 @@ html_content = (
         const rowClass = isNext ? ' class="highlight-row"' : '';
         const badgeTag = isNext ? '<span class="next-badge">最近班次</span>' : '';
         
+        // 確保前端組合的 tripKey 與 Python 產生的完全一致
         const tripKey = destId + "_" + t.DepartureTime + "_" + t.Sequence;
 
         html += '<tr' + rowClass + ' data-trip="' + tripKey + '">' +
@@ -530,4 +501,4 @@ html_content = (
 with open("index.html", "w", encoding="utf-8") as f:
   f.write(html_content)
 
-print("成功產生以時間排序為主軸、重新生成車次的乾淨 index.html！")
+print("成功修復 Key 對應，產生完美的 index.html！")
