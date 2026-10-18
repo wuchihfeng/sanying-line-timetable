@@ -36,3 +36,4 @@ jobs:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           publish_dir: . # 產出的 index.html 所在的資料夾
           publish_branch: gh-pages
+          force_orphan: true # 加上這行，強制覆蓋並解決分支衝突
