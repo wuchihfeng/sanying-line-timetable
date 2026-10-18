@@ -1,8 +1,11 @@
 import json
 
-# 1. 讀取三鶯線完整 JSON 檔 (包含平日與假日)
-with open("sanying_timetable_2026-10-19.json", "r", encoding="utf-8-sig") as f:
-  full_data = json.load(f)
+# 1. 分別讀取平日與例假日的獨立 JSON 檔案
+with open("sanying_timetable_weekday.json", "r", encoding="utf-8-sig") as f:
+  weekday_data = json.load(f)
+
+with open("sanying_timetable_holiday.json", "r", encoding="utf-8-sig") as f:
+  holiday_data = json.load(f)
 
 stations_ordered = [
     ("LB01", "頂埔"),
@@ -29,21 +32,9 @@ def time_to_min(t_str):
   return h * 60 + m
 
 
-# 2. 針對不同營運日 (平日 / 假日) 處理資料
-service_tags = ["平日", "假日"]
-all_station_display_data = []
-all_trips_lookup = {}
-
-for tag in service_tags:
-  # 過濾出該營運日的資料
-  tag_data = [
-      item
-      for item in full_data
-      if item.get("ServiceDay", {}).get("ServiceTag") == tag
-  ]
-
+def process_dataset(raw_data, tag_name):
   station_time_map = {}
-  for station in tag_data:
+  for station in raw_data:
     s_id = station["StationID"]
     dest_id = station["DestinationStaionID"]
     if s_id not in station_time_map:
@@ -55,7 +46,6 @@ for tag in service_tags:
       station_time_map[s_id][dest_id][t["DepartureTime"]] = t
 
   events_by_dest = {"LB12": [], "LB01": []}
-
   for s_id, s_name in stations_ordered:
     for dest_id in ["LB12", "LB01"]:
       if s_id in station_time_map and dest_id in station_time_map[s_id]:
@@ -68,7 +58,6 @@ for tag in service_tags:
           })
 
   trips_lookup = {}
-
   for dest_id in ["LB12", "LB01"]:
     events = events_by_dest[dest_id]
     events.sort(key=lambda x: (x["dep_min"], x["station_index"]))
@@ -81,7 +70,7 @@ for tag in service_tags:
       s_id = ev["station_id"]
       dep_t = ev["dep_time"]
 
-      trip_key = f"{tag}_{dest_id}_{s_id}_{dep_t}_{sys_seq}"
+      trip_key = f"{tag_name}_{dest_id}_{s_id}_{dep_t}_{sys_seq}"
 
       check_stations = (
           stations_ordered
@@ -152,6 +141,7 @@ for tag in service_tags:
       ev["trip_key"] = trip_key
       ev["sys_seq"] = sys_seq
 
+  station_display_data = []
   for s_id, s_name in stations_ordered:
     for dest_id in ["LB12", "LB01"]:
       if s_id in station_time_map and dest_id in station_time_map[s_id]:
@@ -180,8 +170,8 @@ for tag in service_tags:
               "TripKey": matched_trip_key,
           })
 
-        all_station_display_data.append({
-            "ServiceTag": tag,
+        station_display_data.append({
+            "ServiceTag": tag_name,
             "StationID": s_id,
             "StationName": {"Zh_tw": s_name},
             "DestinationStaionID": dest_id,
@@ -189,12 +179,20 @@ for tag in service_tags:
             "Timetables": station_timetables,
         })
 
-  all_trips_lookup[tag] = trips_lookup
+  return station_display_data, trips_lookup
 
-json_str = json.dumps(all_station_display_data, ensure_ascii=False)
+
+# 2. 分別處理平日與假日資料
+weekday_display, weekday_trips = process_dataset(weekday_data, "平日")
+holiday_display, holiday_trips = process_dataset(holiday_data, "例假日")
+
+combined_display_data = weekday_display + holiday_display
+all_trips_lookup = {"平日": weekday_trips, "例假日": holiday_trips}
+
+json_str = json.dumps(combined_display_data, ensure_ascii=False)
 trips_str = json.dumps(all_trips_lookup, ensure_ascii=False)
 
-# 3. 輸出包含平日與假日按鈕的 HTML
+# 3. 輸出 HTML (包含 平日 與 例假日 按鈕)
 html_content = (
     """<!DOCTYPE html>
 <html lang="zh-TW">
@@ -384,10 +382,10 @@ html_content = (
     <h1>新北捷運三鶯線時刻表</h1>
     <div class="label-hint">請選擇營運日、車站與行駛方向：</div>
 
-    <!-- 平日 / 假日 切換按鈕 -->
+    <!-- 平日 / 例假日 切換按鈕 -->
     <div class="day-selector">
-      <button class="day-btn active" id="sanying-timetable-weekday" data-tag="平日">平日班表</button>
-      <button class="day-btn" id="sanying-timetable-holiday" data-tag="假日">例假日班表</button>
+      <button class="day-btn active" id="sanying-timetable-weekday">平日</button>
+      <button class="day-btn" id="sanying-timetable-holiday">例假日</button>
     </div>
 
     <div class="input-group">
@@ -482,7 +480,6 @@ html_content = (
         stationSelect.appendChild(option);
       });
 
-      // 如果原本選的車站在此日也存在，保持選取
       if (stationsMap.has(currentSelectedStation)) {
         stationSelect.value = currentSelectedStation;
       } else {
@@ -494,7 +491,6 @@ html_content = (
     document.addEventListener("DOMContentLoaded", () => {
       updateStationOptions();
 
-      // 綁定平日與假日按鈕事件
       document.getElementById("sanying-timetable-weekday").addEventListener("click", function() {
         document.getElementById("sanying-timetable-holiday").classList.remove("active");
         this.classList.add("active");
@@ -505,7 +501,7 @@ html_content = (
       document.getElementById("sanying-timetable-holiday").addEventListener("click", function() {
         document.getElementById("sanying-timetable-weekday").classList.remove("active");
         this.classList.add("active");
-        currentServiceTag = "假日";
+        currentServiceTag = "例假日";
         updateStationOptions();
       });
     });
@@ -638,6 +634,7 @@ with open("index.html", "w", encoding="utf-8") as f:
   f.write(html_content)
 
 print(
-    "成功產生包含 平日 (sanying-timetable-weekday) 與 假日"
-    " (sanying-timetable-holiday) 按鈕的 index.html！"
+    "成功讀取兩個獨立檔案 (sanying_timetable_weekday.json 與"
+    " sanying_timetable_holiday.json)，並生成帶有「平日」與「例假日」按鈕的"
+    " index.html！"
 )
