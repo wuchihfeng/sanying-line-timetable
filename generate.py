@@ -4,7 +4,7 @@ import json
 with open("sanying_timetable.json", "r", encoding="utf-8-sig") as f:
   full_data = json.load(f)
 
-# 2. 定義三鶯線標準站點順序 (由北到南 / 由南到北)
+# 2. 定義三鶯線標準站點順序 (LB01 -> LB12)
 stations_ordered = [
     ("LB01", "頂埔"),
     ("LB02", "媽祖田"),
@@ -24,7 +24,6 @@ station_indices = {s_id: idx for idx, (s_id, _) in enumerate(stations_ordered)}
 
 
 def time_to_min(t_str):
-  """將 HH:MM 轉為當天總分鐘數"""
   if not t_str or ":" not in t_str:
     return -1
   h, m = map(int, t_str.split(":"))
@@ -52,7 +51,7 @@ for station in full_data:
         "Sequence": t["Sequence"],
     })
 
-# 4. 支援多點發車與時序接龍的軌跡推導引擎
+# 4. 全線單向貫通推導引擎（確保方向一致，絕不倒退嚕）
 trips_lookup = {}
 
 for station in full_data:
@@ -69,89 +68,75 @@ for station in full_data:
       continue
 
     current_s_idx = station_indices.get(s_id, 0)
-    is_forward = True
-    if dest_id in station_indices:
-      dest_idx = station_indices[dest_id]
-      is_forward = dest_idx > current_s_idx
+    # 判定行進方向：若目的地代號大於當前站，則是正向 (LB01 -> LB12)；否則為反向
+    dest_idx = station_indices.get(dest_id, current_s_idx)
+    is_forward = dest_idx > current_s_idx
 
     matched_stops = []
-
-    # 記錄當前這站
+    # 放入當前點
     matched_stops.append({
         "StationID": s_id,
         "StationName": station_map.get(s_id, s_id),
         "ArrivalTime": t["ArrivalTime"],
         "DepartureTime": t["DepartureTime"],
         "SortMin": base_dep_min,
+        "Index": current_s_idx,
     })
 
-    # 1. 往前推導（若清晨為中途發車，找不到上一站就會自然停止，不強行串聯）
-    prev_idx = current_s_idx - 1 if is_forward else current_s_idx + 1
-    ref_time = base_dep_min
-    while 0 <= prev_idx < len(stations_ordered):
-      p_id, p_name = stations_ordered[prev_idx]
+    # 嚴格單向擴展：依序往終點方向或起點方向把整條線各站抓出來
+    # 往回推 (Past stations)
+    curr_idx = current_s_idx + (1 if not is_forward else -1)
+    ref_min = base_dep_min
+    while 0 <= curr_idx < len(stations_ordered):
+      p_id, p_name = stations_ordered[curr_idx]
       if p_id in time_index and dest_id in time_index[p_id]:
-        candidates = [
-            item
-            for item in time_index[p_id][dest_id]
-            if 0 < (ref_time - item["DepMin"]) <= 12
-        ]
-        if candidates:
-          best_match = min(candidates, key=lambda x: ref_time - x["DepMin"])
-          matched_stops.insert(
-              0,
-              {
-                  "StationID": p_id,
-                  "StationName": p_name,
-                  "ArrivalTime": best_match["ArrivalTime"],
-                  "DepartureTime": best_match["DepartureTime"],
-                  "SortMin": best_match["DepMin"],
-              },
-          )
-          ref_time = best_match["DepMin"]
-          prev_idx = prev_idx - 1 if is_forward else prev_idx + 1
+        # 尋找時間合理的匹配
+        candidates = time_index[p_id][dest_id]
+        # 依方向過濾時間
+        if is_forward:
+          valid = [c for c in candidates if c["DepMin"] < ref_min]
+          if valid:
+            best = max(valid, key=lambda x: x["DepMin"])
+            matched_stops.append({
+                "StationID": p_id,
+                "StationName": p_name,
+                "ArrivalTime": best["ArrivalTime"],
+                "DepartureTime": best["DepartureTime"],
+                "SortMin": best["DepMin"],
+                "Index": curr_idx,
+            })
+            ref_min = best["DepMin"]
         else:
-          break  # 找不到合理上一站，代表此處即為該車次的起點（支援多點發車）
-      else:
-        break
-      break  # 嚴格單步回溯，避免清晨車次過於密集時跨車誤判
+          valid = [c for c in candidates if c["DepMin"] > ref_min]
+          if valid:
+            best = min(valid, key=lambda x: x["DepMin"])
+            matched_stops.append({
+                "StationID": p_id,
+                "StationName": p_name,
+                "ArrivalTime": best["ArrivalTime"],
+                "DepartureTime": best["DepartureTime"],
+                "SortMin": best["DepMin"],
+                "Index": curr_idx,
+            })
+            ref_min = best["DepMin"]
+      curr_idx += 1 if not is_forward else -1
 
-    # 2. 往後推導
-    next_idx = current_s_idx + 1 if is_forward else current_s_idx - 1
-    ref_time = base_dep_min
-    while 0 <= next_idx < len(stations_ordered):
-      n_id, n_name = stations_ordered[next_idx]
-      if n_id in time_index and dest_id in time_index[n_id]:
-        candidates = [
-            item
-            for item in time_index[n_id][dest_id]
-            if 0 < (item["DepMin"] - ref_time) <= 12
-        ]
-        if candidates:
-          best_match = min(candidates, key=lambda x: x["DepMin"] - ref_time)
-          matched_stops.append({
-              "StationID": n_id,
-              "StationName": n_name,
-              "ArrivalTime": best_match["ArrivalTime"],
-              "DepartureTime": best_match["DepartureTime"],
-              "SortMin": best_match["DepMin"],
-          })
-          ref_time = best_match["DepMin"]
-          next_idx = next_idx + 1 if is_forward else next_idx - 1
-        else:
-          break
-      else:
-        break
-      break  # 嚴格單步追蹤後續站點
-
-    # 3. 時間排序
-    matched_stops.sort(key=lambda x: x["SortMin"])
+    # 依照站點真實物理順序排序 (LB01 到 LB12)
+    matched_stops.sort(key=lambda x: x["Index"])
 
     trips_lookup[trip_key] = {
         "DestinationName": dest_name,
         "Sequence": t["Sequence"],
         "DepartureTime": base_dep_str,
-        "Stops": matched_stops,
+        "Stops": [
+            {
+                "StationID": s["StationID"],
+                "StationName": s["StationName"],
+                "ArrivalTime": s["ArrivalTime"],
+                "DepartureTime": s["DepartureTime"],
+            }
+            for s in matched_stops
+        ],
     }
 
 # 5. 轉成 JSON 格式
@@ -321,7 +306,7 @@ html_content = (
 
   <div class="calculator">
     <h1>新北捷運三鶯線時刻表</h1>
-    <div class="label-hint">請選擇您想要查詢的車站與行駛方向（點擊任一班次可檢視實際發車起點至終點站）：</div>
+    <div class="label-hint">請選擇您想要查詢的車站與行駛方向（點擊任一班次可檢視完整全線站點）：</div>
 
     <div class="input-group">
       <label for="stationSelect">選擇車站</label>
@@ -368,7 +353,7 @@ html_content = (
   <div class="modal" id="tripModal">
     <div class="modal-content">
       <div class="modal-header">
-        <h3 id="modalTitle">車次實際行經站</h3>
+        <h3 id="modalTitle">車次完整行經站</h3>
         <button class="close-btn" id="closeModal">&times;</button>
       </div>
       <div class="modal-body">
@@ -381,7 +366,7 @@ html_content = (
             </tr>
           </thead>
           <tbody id="modalBody">
-            <!-- 動態插入支援多點發車的停靠站 -->
+            <!-- 動態插入全線貫通停靠站 -->
           </tbody>
         </table>
       </div>
@@ -487,7 +472,7 @@ html_content = (
       });
 
       tbody.innerHTML = html;
-      resultCount.textContent = "查詢結果：共 " + targetData.Timetables.length + " 筆班次 (點擊可看實際行經站)";
+      resultCount.textContent = "查詢結果：共 " + targetData.Timetables.length + " 筆班次 (點擊可看全線站點)";
 
       setTimeout(() => {
         const highlightedRow = tbody.querySelector('.highlight-row');
@@ -538,6 +523,4 @@ html_content = (
 with open("index.html", "w", encoding="utf-8") as f:
   f.write(html_content)
 
-print(
-    "成功產生 index.html！"
-)
+print("成功產生 index.html！")
