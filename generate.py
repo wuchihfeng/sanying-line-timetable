@@ -7,7 +7,7 @@ with open("sanying_timetable.json", "r", encoding="utf-8-sig") as f:
 # 2. 將 Python 物件轉成 JSON 字串
 json_str = json.dumps(full_data, ensure_ascii=False)
 
-# 3. 使用一般字串組合網頁內容
+# 3. 使用一般字串組合網頁內容（已移除邊框、陰影，並調整自適應寬度）
 html_content = (
     """<!DOCTYPE html>
 <html lang="zh-TW">
@@ -24,17 +24,18 @@ html_content = (
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; 
       display: flex; 
       justify-content: center; 
-      padding: 12px; 
+      padding: 0px; /* 移除邊距讓手機端完全自適應貼邊 */
       width: 100%;   
+      min-height: 100vh;
     }
     .calculator { 
       background: #1e1e1e; 
       padding: 20px; 
-      border-radius: 16px; 
+      border-radius: 0px; /* 若希望完全貼齊可改為 0，若想要微圓角可改 12px */
       width: 100%;       
-      max-width: 520px; 
-      border: 1px solid #333; 
-      box-shadow: 0 12px 30px rgba(0,0,0,0.45); 
+      max-width: 700px; /* 可依需求調整最大自適應寬度 */
+      border: none; /* 移除外框 */
+      box-shadow: none; /* 移除陰影 */
       overflow: hidden;  
     }
     h1 { font-size: 1.25rem; color: #39C0E1; text-align: center; margin: 0 0 15px; }
@@ -68,7 +69,7 @@ html_content = (
     hr { border: 0; border-top: 1px solid #333; margin: 20px 0; }
     .result-container {
       margin-top: 15px;
-      max-height: 350px;
+      max-height: 450px;
       overflow-y: auto;
     }
     .result-container::-webkit-scrollbar { width: 4px; }
@@ -193,7 +194,6 @@ html_content = (
         return;
       }
 
-      // 取得該車站的所有目的地，並透過 Map 過濾重複項
       const availableDestinations = sanyingData.filter(item => item.StationID === stationId);
       const destMap = new Map();
 
@@ -255,4 +255,5 @@ html_content = (
 with open("index.html", "w", encoding="utf-8") as f:
   f.write(html_content)
 
-print("成功產生 index.html（主題色已更新為 #39C0E1）！")
+print("成功產生無邊框、自適應寬度的 index.html！")
+w
