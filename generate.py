@@ -29,6 +29,14 @@ def time_to_min(t_str):
   return h * 60 + m
 
 
+def min_to_time(m):
+  if m < 0:
+    return ""
+  h = (m // 60) % 24
+  mm = m % 60
+  return f"{h:02d}:{mm:02d}"
+
+
 # 2. 解析單一檔案資料，自動依 ServiceTag 進行分類並計算車次排序
 # 先將原始資料依服務日標籤（平日/例假日）分群
 datasets_by_tag = {"平日": [], "例假日": []}
@@ -121,12 +129,24 @@ def process_dataset(dataset_list, tag_name):
       if start_pos != -1:
         for p in range(start_pos, len(check_stations)):
           check_s_id, check_s_name = check_stations[p]
-          if (
-              check_s_id in station_time_map
-              and dest_id in station_time_map[check_s_id]
-          ):
+          best_match = None
+
+          # 套用指定區段 3 分鐘直接計算規則 (永吉公園 -> 鶯桃福德 或 媽祖田 -> 頂埔)
+          if len(collected_stops) > 0:
+            prev_stop = collected_stops[-1]
+            if (prev_stop["StationID"] == "LB11" and check_s_id == "LB12") or (
+                prev_stop["StationID"] == "LB02" and check_s_id == "LB01"
+            ):
+              calc_min = time_to_min(prev_stop["DepartureTime"]) + 3
+              calc_t_str = min_to_time(calc_min)
+              best_match = {
+                  "ArrivalTime": calc_t_str,
+                  "DepartureTime": calc_t_str,
+              }
+
+          # 若非上述特例，則正常從 station_time_map 中尋找匹配
+          if not best_match and check_s_id in station_time_map and dest_id in station_time_map[check_s_id]:
             dest_t_map = station_time_map[check_s_id][dest_id]
-            best_match = None
             min_diff = 999
 
             for d_time, d_obj in dest_t_map.items():
@@ -139,15 +159,15 @@ def process_dataset(dataset_list, tag_name):
             if check_s_id == s_id and dep_t in dest_t_map:
               best_match = dest_t_map[dep_t]
 
-            if best_match:
-              collected_stops.append({
-                  "StationID": check_s_id,
-                  "StationName": check_s_name,
-                  "ArrivalTime": best_match.get("ArrivalTime", ""),
-                  "DepartureTime": best_match.get("DepartureTime", ""),
-                  "Index": station_indices[check_s_id],
-              })
-              curr_ref_min = time_to_min(best_match.get("DepartureTime", ""))
+          if best_match:
+            collected_stops.append({
+                "StationID": check_s_id,
+                "StationName": check_s_name,
+                "ArrivalTime": best_match.get("ArrivalTime", ""),
+                "DepartureTime": best_match.get("DepartureTime", ""),
+                "Index": station_indices[check_s_id],
+            })
+            curr_ref_min = time_to_min(best_match.get("DepartureTime", ""))
 
       collected_stops.sort(
           key=lambda x: x["Index"],
@@ -669,6 +689,7 @@ with open("index.html", "w", encoding="utf-8") as f:
   f.write(html_content)
 
 print(
-    "成功將車次排序與全線停靠站彈窗功能整合至單一檔案的 index.html 中！"
+    "成功將 3 分鐘行駛時間規則（永吉公園 ⇄ 鶯桃福德、媽祖田 ⇄ 頂埔）加入"
+    " generate.py 並重新產出 index.html！"
 )
 2
