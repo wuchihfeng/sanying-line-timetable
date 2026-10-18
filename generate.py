@@ -1,7 +1,7 @@
 import json
 
 # 1. 讀取三鶯線完整 JSON 檔
-with open("sanying_timetable_2026-10-18.json", "r", encoding="utf-8-sig") as f:
+with open("sanying_timetable.json", "r", encoding="utf-8-sig") as f:
   full_data = json.load(f)
 
 stations_ordered = [
