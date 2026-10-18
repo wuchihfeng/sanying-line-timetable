@@ -4,10 +4,40 @@ import json
 with open("sanying_timetable.json", "r", encoding="utf-8-sig") as f:
   full_data = json.load(f)
 
-# 2. 將 Python 物件轉成 JSON 字串
-json_str = json.dumps(full_data, ensure_ascii=False)
+# 2. Python 端預先分類與車次串聯：建立全線車次停靠資料庫 (Trips Lookup)
+trips_lookup = {}
+for station in full_data:
+  s_id = station["StationID"]
+  s_name = station["StationName"]["Zh_tw"]
+  dest_id = station["DestinationStaionID"]
+  dest_name = station["DestinationStationName"]["Zh_tw"]
 
-# 3. 組合完整的 HTML 內容（加入自動比對當前時間、最近班次高亮與自動捲動功能）
+  for t in station.get("Timetables", []):
+    # 以 目的地代號 + 發車時間 + 序號 作為該車次在全線的唯一識別 Key
+    trip_key = f"{dest_id}_{t['DepartureTime']}_{t['Sequence']}"
+    if trip_key not in trips_lookup:
+      trips_lookup[trip_key] = {
+          "DestinationName": dest_name,
+          "Sequence": t["Sequence"],
+          "DepartureTime": t["DepartureTime"],
+          "Stops": [],
+      }
+    trips_lookup[trip_key]["Stops"].append({
+        "StationID": s_id,
+        "StationName": s_name,
+        "ArrivalTime": t["ArrivalTime"],
+        "DepartureTime": t["DepartureTime"],
+    })
+
+# 將各車次的停靠站依車站代號 (LB01 -> LB12) 排序
+for k in trips_lookup:
+  trips_lookup[k]["Stops"].sort(key=lambda x: x["StationID"])
+
+# 3. 轉成 JSON 字串以便嵌入前端
+json_str = json.dumps(full_data, ensure_ascii=False)
+trips_str = json.dumps(trips_lookup, ensure_ascii=False)
+
+# 4. 組合完整的 HTML 內容（含最近班次高亮、自動捲動、點擊查看全線停靠站彈窗）
 html_content = (
     """<!DOCTYPE html>
 <html lang="zh-TW">
@@ -92,11 +122,11 @@ html_content = (
       padding: 10px 8px;
       border-bottom: 1px solid #333;
       color: #ccc;
+      cursor: pointer;
     }
     .record-table tr:hover {
-      background-color: rgba(57, 192, 225, 0.05);
+      background-color: rgba(57, 192, 225, 0.08);
     }
-    /* 最近班次高亮樣式 */
     .highlight-row {
       background-color: rgba(57, 192, 225, 0.15) !important;
     }
@@ -127,13 +157,50 @@ html_content = (
       padding: 20px;
       font-size: 0.85rem;
     }
+    /* 彈窗樣式 */
+    .modal {
+      display: none;
+      position: fixed;
+      top: 0; left: 0; width: 100%; height: 100%;
+      background: rgba(0,0,0,0.7);
+      justify-content: center;
+      align-items: center;
+      padding: 16px;
+      z-index: 1000;
+    }
+    .modal-content {
+      background: #222;
+      border: 1px solid #39C0E1;
+      border-radius: 12px;
+      width: 100%;
+      max-width: 480px;
+      max-height: 80vh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+    }
+    .modal-header {
+      padding: 15px;
+      background: #282828;
+      border-bottom: 1px solid #333;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .modal-header h3 { margin: 0; font-size: 1rem; color: #39C0E1; }
+    .close-btn { background: none; border: none; color: #aaa; font-size: 1.2rem; cursor: pointer; }
+    .modal-body { padding: 15px; overflow-y: auto; }
+    .stop-table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+    .stop-table th, .stop-table td { padding: 8px; border-bottom: 1px solid #333; text-align: left; }
+    .stop-table th { color: #39C0E1; background: #1e1e1e; }
   </style>
 </head>
 <body>
 
   <div class="calculator">
     <h1>新北捷運三鶯線時刻表</h1>
-    <div class="label-hint">請選擇您想要查詢的車站與行駛方向：</div>
+    <div class="label-hint">請選擇您想要查詢的車站與行駛方向（點擊任一班次可檢視全線停靠站）：</div>
 
     <div class="input-group">
       <label for="stationSelect">選擇車站</label>
@@ -176,10 +243,37 @@ html_content = (
     </div>
   </div>
 
+  <!-- 全線停靠站彈窗 -->
+  <div class="modal" id="tripModal">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3 id="modalTitle">車次停靠站詳情</h3>
+        <button class="close-btn" id="closeModal">&times;</button>
+      </div>
+      <div class="modal-body">
+        <table class="stop-table">
+          <thead>
+            <tr>
+              <th>車站</th>
+              <th>到站時間</th>
+              <th>發車時間</th>
+            </tr>
+          </thead>
+          <tbody id="modalBody">
+            <!-- 動態插入停靠站 -->
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
   <script>
-    // 自動嵌入完整三鶯線時刻表資料
+    // 自動嵌入站點時刻表與全線車次追蹤資料
     const sanyingData = """
     + json_str
+    + """;
+    const tripsLookup = """
+    + trips_str
     + """;
 
     document.addEventListener("DOMContentLoaded", () => {
@@ -234,7 +328,6 @@ html_content = (
       const destId = document.getElementById("directionSelect").value;
       const tbody = document.getElementById("timetableBody");
       const resultCount = document.getElementById("resultCount");
-      const resultContainer = document.getElementById("resultContainer");
 
       if (!stationId || !destId) {
         alert("請完整選擇車站與方向！");
@@ -249,25 +342,25 @@ html_content = (
         return;
       }
 
-      // 取得目前系統時間 (格式 "HH:MM")
+      // 取得目前系統時間
       const now = new Date();
       const currentHours = String(now.getHours()).padStart(2, '0');
       const currentMinutes = String(now.getMinutes()).padStart(2, '0');
       const currentTimeStr = currentHours + ":" + currentMinutes;
 
-      // 尋找最近的班次索引 (發車時間 >= 當前時間的第一個)
       let nextIndex = targetData.Timetables.findIndex(t => t.DepartureTime >= currentTimeStr);
-      if (nextIndex === -1) {
-        nextIndex = 0; // 如果今天已經沒有班次，預設指向第一班
-      }
+      if (nextIndex === -1) { nextIndex = 0; }
 
       let html = "";
       targetData.Timetables.forEach((t, index) => {
         const isNext = (index === nextIndex);
         const rowClass = isNext ? ' class="highlight-row"' : '';
         const badgeTag = isNext ? '<span class="next-badge">最近班次</span>' : '';
+        
+        // 綁定車次 Key 用於點擊彈窗
+        const tripKey = destId + "_" + t.DepartureTime + "_" + t.Sequence;
 
-        html += '<tr' + rowClass + '>' +
+        html += '<tr' + rowClass + ' data-trip="' + tripKey + '">' +
           '<td><span class="badge">#' + t.Sequence + '</span></td>' +
           '<td>' + t.ArrivalTime + '</td>' +
           '<td><b>' + t.DepartureTime + '</b>' + badgeTag + '</td>' +
@@ -276,15 +369,49 @@ html_content = (
       });
 
       tbody.innerHTML = html;
-      resultCount.textContent = "查詢結果：共 " + targetData.Timetables.length + " 筆班次 (已自動定位最近班次)";
+      resultCount.textContent = "查詢結果：共 " + targetData.Timetables.length + " 筆班次 (點擊任一班次可看沿途停靠)";
 
-      // 自動將捲軸滾動到最近班次的列
+      // 自動將捲軸滾動到最近班次
       setTimeout(() => {
         const highlightedRow = tbody.querySelector('.highlight-row');
         if (highlightedRow) {
           highlightedRow.scrollIntoView({ behavior: 'smooth', block: 'center' });
         }
       }, 100);
+
+      // 綁定點擊事件以開啟車次詳情彈窗
+      tbody.querySelectorAll('tr[data-trip]').forEach(tr => {
+        tr.addEventListener('click', function() {
+          const tKey = this.getAttribute('data-trip');
+          const tripInfo = tripsLookup[tKey];
+          if (!tripInfo) {
+            alert('找不到該車次的詳細停靠資料');
+            return;
+          }
+
+          document.getElementById('modalTitle').textContent = "車次 #" + tripInfo.Sequence + " 往 " + tripInfo.DestinationName + " (發車: " + tripInfo.DepartureTime + ")";
+          
+          let stopHtml = "";
+          tripInfo.Stops.forEach(stop => {
+            stopHtml += '<tr>' +
+              '<td>' + stop.StationID + ' ' + stop.StationName + '</td>' +
+              '<td>' + stop.ArrivalTime + '</td>' +
+              '<td><b>' + stop.DepartureTime + '</b></td>' +
+              '</tr>';
+          });
+          document.getElementById('modalBody').innerHTML = stopHtml;
+          document.getElementById('tripModal').style.display = 'flex';
+        });
+      });
+    });
+
+    // 關閉彈窗邏輯
+    document.getElementById('closeModal').addEventListener('click', () => {
+      document.getElementById('tripModal').style.display = 'none';
+    });
+    window.addEventListener('click', (e) => {
+      const modal = document.getElementById('tripModal');
+      if (e.target === modal) { modal.style.display = 'none'; }
     });
   </script>
 </body>
@@ -292,8 +419,8 @@ html_content = (
 """
 )
 
-# 4. 輸出成 index.html
+# 5. 輸出成 index.html
 with open("index.html", "w", encoding="utf-8") as f:
   f.write(html_content)
 
-print("成功產生具備最近班次自動定位功能的 index.html！")
+print("成功產生 index.html！")
