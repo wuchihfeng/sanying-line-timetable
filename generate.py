@@ -1,22 +1,23 @@
 import json
 
-# 1. 讀取你剛剛抓到的三鶯線完整 JSON 檔
+# 1. 讀取三鶯線完整 JSON 檔
 with open("sanying_timetable.json", "r", encoding="utf-8-sig") as f:
   full_data = json.load(f)
 
-# 2. 將 Python 物件轉成安全的 JSON 字串
+# 2. 將 Python 物件轉成 JSON 字串
 json_str = json.dumps(full_data, ensure_ascii=False)
 
-# 3. 組合出完整的 HTML 內容
-html_content = f"""<!DOCTYPE html>
+# 3. 使用一般字串（不用 f-string），只在需要帶入變數的地方用 .format() 或直接相加
+html_content = (
+    """<!DOCTYPE html>
 <html lang="zh-TW">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>新北捷運三鶯線 - 車站時刻表查詢</title>
   <style>
-    * {{ box-sizing: border-box; }}
-    body {{ 
+    * { box-sizing: border-box; }
+    body { 
       margin: 0; 
       background: #121212; 
       color: #e0e0e0; 
@@ -25,8 +26,8 @@ html_content = f"""<!DOCTYPE html>
       justify-content: center; 
       padding: 12px; 
       width: 100%;   
-    }}
-    .calculator {{ 
+    }
+    .calculator { 
       background: #1e1e1e; 
       padding: 20px; 
       border-radius: 16px; 
@@ -35,12 +36,12 @@ html_content = f"""<!DOCTYPE html>
       border: 1px solid #333; 
       box-shadow: 0 12px 30px rgba(0,0,0,0.45); 
       overflow: hidden;  
-    }}
-    h1 {{ font-size: 1.25rem; color: #ff9800; text-align: center; margin: 0 0 15px; }}
-    .label-hint {{ font-size: 0.8rem; color: #888; margin-bottom: 10px; }}
-    .input-group {{ margin-bottom: 15px; }}
-    label {{ display: block; font-size: 0.82rem; margin-bottom: 6px; color: #aaa; }}
-    select, input {{ 
+    }
+    h1 { font-size: 1.25rem; color: #ff9800; text-align: center; margin: 0 0 15px; }
+    .label-hint { font-size: 0.8rem; color: #888; margin-bottom: 10px; }
+    .input-group { margin-bottom: 15px; }
+    label { display: block; font-size: 0.82rem; margin-bottom: 6px; color: #aaa; }
+    select, input { 
       width: 100%; 
       padding: 11px; 
       background: #252525; 
@@ -49,9 +50,9 @@ html_content = f"""<!DOCTYPE html>
       color: #fff; 
       outline: none; 
       font-size: 0.95rem;
-    }}
-    select:focus, input:focus {{ border-color: #ff9800; }}
-    .calc-btn {{ 
+    }
+    select:focus, input:focus { border-color: #ff9800; }
+    .calc-btn { 
       width: 100%;
       background: #ff9800; 
       color: #121212; 
@@ -62,23 +63,23 @@ html_content = f"""<!DOCTYPE html>
       cursor: pointer; 
       font-size: 0.95rem;
       transition: background 0.2s;
-    }}
-    .calc-btn:hover {{ background: #e68a00; }}
-    hr {{ border: 0; border-top: 1px solid #333; margin: 20px 0; }}
-    .result-container {{
+    }
+    .calc-btn:hover { background: #e68a00; }
+    hr { border: 0; border-top: 1px solid #333; margin: 20px 0; }
+    .result-container {
       margin-top: 15px;
       max-height: 350px;
       overflow-y: auto;
-    }}
-    .result-container::-webkit-scrollbar {{ width: 4px; }}
-    .result-container::-webkit-scrollbar-thumb {{ background: #ff9800; border-radius: 10px; }}
-    .record-table {{
+    }
+    .result-container::-webkit-scrollbar { width: 4px; }
+    .result-container::-webkit-scrollbar-thumb { background: #ff9800; border-radius: 10px; }
+    .record-table {
       width: 100%;
       border-collapse: collapse;
       text-align: left;
       font-size: 0.85rem;
-    }}
-    .record-table th {{
+    }
+    .record-table th {
       padding: 10px 8px;
       border-bottom: 2px solid #333;
       color: #ff9800;
@@ -86,29 +87,29 @@ html_content = f"""<!DOCTYPE html>
       background: #222;
       position: sticky;
       top: 0;
-    }}
-    .record-table td {{
+    }
+    .record-table td {
       padding: 10px 8px;
       border-bottom: 1px solid #333;
       color: #ccc;
-    }}
-    .record-table tr:hover {{
+    }
+    .record-table tr:hover {
       background-color: rgba(255, 152, 0, 0.05);
-    }}
-    .badge {{
+    }
+    .badge {
       background: rgba(255, 152, 0, 0.15);
       color: #ff9800;
       padding: 3px 6px;
       border-radius: 4px;
       font-size: 0.75rem;
       font-weight: bold;
-    }}
-    .empty-msg {{
+    }
+    .empty-msg {
       text-align: center;
       color: #666;
       padding: 20px;
       font-size: 0.85rem;
-    }}
+    }
   </style>
 </head>
 <body>
@@ -160,86 +161,89 @@ html_content = f"""<!DOCTYPE html>
 
   <script>
     // 自動嵌入完整三鶯線時刻表資料
-    const sanyingData = {json_str};
+    const sanyingData = """
+    + json_str
+    + """;
 
-    document.addEventListener("DOMContentLoaded", () => {{
+    document.addEventListener("DOMContentLoaded", () => {
       const stationSelect = document.getElementById("stationSelect");
       const stationsMap = new Map();
       
-      sanyingData.forEach(item => {{
-        if (!stationsMap.has(item.StationID)) {{
+      sanyingData.forEach(item => {
+        if (!stationsMap.has(item.StationID)) {
           stationsMap.set(item.StationID, item.StationName.Zh_tw);
-        }}
-      }});
+        }
+      });
 
-      stationsMap.forEach((name, id) => {{
+      stationsMap.forEach((name, id) => {
         const option = document.createElement("option");
         option.value = id;
-        option.textContent = `${{id}} ${{name}}`;
+        option.textContent = id + " " + name;
         stationSelect.appendChild(option);
-      }});
-    }});
+      });
+    });
 
-    document.getElementById("stationSelect").addEventListener("change", function() {{
+    document.getElementById("stationSelect").addEventListener("change", function() {
       const stationId = this.value;
       const directionSelect = document.getElementById("directionSelect");
       directionSelect.innerHTML = '<option value="">-- 請選擇方向 --</option>';
       
-      if (!stationId) {{
+      if (!stationId) {
         directionSelect.disabled = true;
         return;
-      }}
+      }
 
       const availableDestinations = sanyingData.filter(item => item.StationID === stationId);
-      availableDestinations.forEach(item => {{
+      availableDestinations.forEach(item => {
         const option = document.createElement("option");
         option.value = item.DestinationStaionID;
-        option.textContent = `往 ${{item.DestinationStationName.Zh_tw}}`;
+        option.textContent = "往 " + item.DestinationStationName.Zh_tw;
         directionSelect.appendChild(option);
-      }});
+      });
 
       directionSelect.disabled = false;
-    }});
+    });
 
-    document.getElementById("searchBtn").addEventListener("click", () => {{
+    document.getElementById("searchBtn").addEventListener("click", () => {
       const stationId = document.getElementById("stationSelect").value;
       const destId = document.getElementById("directionSelect").value;
       const tbody = document.getElementById("timetableBody");
       const resultCount = document.getElementById("resultCount");
 
-      if (!stationId || !destId) {{
+      if (!stationId || !destId) {
         alert("請完整選擇車站與方向！");
         return;
-      }}
+      }
 
       const targetData = sanyingData.find(item => item.StationID === stationId && item.DestinationStaionID === destId);
 
-      if (!targetData || !targetData.Timetables || targetData.Timetables.length === 0) {{
+      if (!targetData || !targetData.Timetables || targetData.Timetables.length === 0) {
         tbody.innerHTML = '<tr><td colspan="4" class="empty-msg">查無相關時刻表資料</td></tr>';
         resultCount.textContent = "共 0 筆班次";
         return;
-      }}
+      }
 
       let html = "";
-      targetData.Timetables.forEach(t => {{
-        html += `<tr>
-          <td><span class="badge">#${{t.Sequence}}</span></td>
-          <td>${{t.ArrivalTime}}</td>
-          <td><b>${{t.DepartureTime}}</b></td>
-          <td>${{targetData.DestinationStationName.Zh_tw}}</td>
-        </tr>`;
+      targetData.Timetables.forEach(t => {
+        html += '<tr>' +
+          '<td><span class="badge">#' + t.Sequence + '</span></td>' +
+          '<td>' + t.ArrivalTime + '</td>' +
+          '<td><b>' + t.DepartureTime + '</b></td>' +
+          '<td>' + targetData.DestinationStationName.Zh_tw + '</td>' +
+          '</tr>';
       });
 
       tbody.innerHTML = html;
-      resultCount.textContent = `查詢結果：共 ${{targetData.Timetables.length}} 筆班次`;
-    }});
+      resultCount.textContent = "查詢結果：共 " + targetData.Timetables.length + " 筆班次";
+    });
   </script>
 </body>
 </html>
 """
+)
 
-# 4. 輸出成完整的 index.html 檔案
+# 4. 輸出成 index.html
 with open("index.html", "w", encoding="utf-8") as f:
   f.write(html_content)
 
-print("成功產生內含完整資料的 index.html 網頁！")
+print("成功產生 index.html！")
