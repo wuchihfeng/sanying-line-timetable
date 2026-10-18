@@ -1,7 +1,7 @@
 import json
 
-# 1. 讀取三鶯線完整 JSON 檔
-with open("sanying_timetable.json", "r", encoding="utf-8-sig") as f:
+# 1. 讀取三鶯線完整 JSON 檔 (包含平日與假日)
+with open("sanying_timetable_2026-10-19.json", "r", encoding="utf-8-sig") as f:
   full_data = json.load(f)
 
 stations_ordered = [
@@ -29,162 +29,172 @@ def time_to_min(t_str):
   return h * 60 + m
 
 
-# 2. 建立全域車站時間索引
-station_time_map = {}
-for station in full_data:
-  s_id = station["StationID"]
-  dest_id = station["DestinationStaionID"]
-  if s_id not in station_time_map:
-    station_time_map[s_id] = {}
-  if dest_id not in station_time_map[s_id]:
-    station_time_map[s_id][dest_id] = {}
+# 2. 針對不同營運日 (平日 / 假日) 處理資料
+service_tags = ["平日", "假日"]
+all_station_display_data = []
+all_trips_lookup = {}
 
-  for t in station.get("Timetables", []):
-    station_time_map[s_id][dest_id][t["DepartureTime"]] = t
+for tag in service_tags:
+  # 過濾出該營運日的資料
+  tag_data = [
+      item
+      for item in full_data
+      if item.get("ServiceDay", {}).get("ServiceTag") == tag
+  ]
 
-# 3. 收集全系統所有發車事件
-events_by_dest = {"LB12": [], "LB01": []}
+  station_time_map = {}
+  for station in tag_data:
+    s_id = station["StationID"]
+    dest_id = station["DestinationStaionID"]
+    if s_id not in station_time_map:
+      station_time_map[s_id] = {}
+    if dest_id not in station_time_map[s_id]:
+      station_time_map[s_id][dest_id] = {}
 
-for s_id, s_name in stations_ordered:
+    for t in station.get("Timetables", []):
+      station_time_map[s_id][dest_id][t["DepartureTime"]] = t
+
+  events_by_dest = {"LB12": [], "LB01": []}
+
+  for s_id, s_name in stations_ordered:
+    for dest_id in ["LB12", "LB01"]:
+      if s_id in station_time_map and dest_id in station_time_map[s_id]:
+        for dep_t in station_time_map[s_id][dest_id]:
+          events_by_dest[dest_id].append({
+              "station_id": s_id,
+              "dep_time": dep_t,
+              "dep_min": time_to_min(dep_t),
+              "station_index": station_indices[s_id],
+          })
+
+  trips_lookup = {}
+
   for dest_id in ["LB12", "LB01"]:
-    if s_id in station_time_map and dest_id in station_time_map[s_id]:
-      for dep_t in station_time_map[s_id][dest_id]:
-        events_by_dest[dest_id].append({
-            "station_id": s_id,
-            "dep_time": dep_t,
-            "dep_min": time_to_min(dep_t),
-            "station_index": station_indices[s_id],
-        })
+    events = events_by_dest[dest_id]
+    events.sort(key=lambda x: (x["dep_min"], x["station_index"]))
 
-trips_lookup = {}
+    dest_name = "鶯桃福德" if dest_id == "LB12" else "頂埔"
+    is_heading_yingge = dest_id == "LB12"
 
-for dest_id in ["LB12", "LB01"]:
-  events = events_by_dest[dest_id]
-  # 嚴格排序：時間優先，車站順序次之
-  events.sort(key=lambda x: (x["dep_min"], x["station_index"]))
+    for idx, ev in enumerate(events):
+      sys_seq = idx + 1
+      s_id = ev["station_id"]
+      dep_t = ev["dep_time"]
 
-  dest_name = "鶯桃福德" if dest_id == "LB12" else "頂埔"
-  is_heading_yingge = dest_id == "LB12"
+      trip_key = f"{tag}_{dest_id}_{s_id}_{dep_t}_{sys_seq}"
 
-  for idx, ev in enumerate(events):
-    sys_seq = idx + 1
-    s_id = ev["station_id"]
-    dep_t = ev["dep_time"]
+      check_stations = (
+          stations_ordered
+          if is_heading_yingge
+          else list(reversed(stations_ordered))
+      )
+      start_pos = -1
+      for p, (cs_id, _) in enumerate(check_stations):
+        if cs_id == s_id:
+          start_pos = p
+          break
 
-    trip_key = f"{dest_id}_{s_id}_{dep_t}_{sys_seq}"
+      collected_stops = []
+      curr_ref_min = ev["dep_min"]
 
-    check_stations = (
-        stations_ordered if is_heading_yingge else list(reversed(stations_ordered))
-    )
-    start_pos = -1
-    for p, (cs_id, _) in enumerate(check_stations):
-      if cs_id == s_id:
-        start_pos = p
-        break
+      if start_pos != -1:
+        for p in range(start_pos, len(check_stations)):
+          check_s_id, check_s_name = check_stations[p]
+          if (
+              check_s_id in station_time_map
+              and dest_id in station_time_map[check_s_id]
+          ):
+            dest_t_map = station_time_map[check_s_id][dest_id]
+            best_match = None
+            min_diff = 999
 
-    collected_stops = []
-    curr_ref_min = ev["dep_min"]
+            for d_time, d_obj in dest_t_map.items():
+              d_min = time_to_min(d_time)
+              diff = d_min - curr_ref_min
+              if 1 <= diff <= 25 and diff < min_diff:
+                min_diff = diff
+                best_match = d_obj
 
-    if start_pos != -1:
-      for p in range(start_pos, len(check_stations)):
-        check_s_id, check_s_name = check_stations[p]
-        if (
-            check_s_id in station_time_map
-            and dest_id in station_time_map[check_s_id]
-        ):
-          dest_t_map = station_time_map[check_s_id][dest_id]
-          best_match = None
-          min_diff = 999
+            if check_s_id == s_id and dep_t in dest_t_map:
+              best_match = dest_t_map[dep_t]
 
-          for d_time, d_obj in dest_t_map.items():
-            d_min = time_to_min(d_time)
-            diff = d_min - curr_ref_min
-            # 嚴格時間遞進：相鄰車站時間差必須在 1 到 25 分鐘之間，杜絕分身車與時間交錯
-            if 1 <= diff <= 25 and diff < min_diff:
-              min_diff = diff
-              best_match = d_obj
+            if best_match:
+              collected_stops.append({
+                  "StationID": check_s_id,
+                  "StationName": check_s_name,
+                  "ArrivalTime": best_match["ArrivalTime"],
+                  "DepartureTime": best_match["DepartureTime"],
+                  "Index": station_indices[check_s_id],
+              })
+              curr_ref_min = time_to_min(best_match["DepartureTime"])
 
-          # 起始站直接對應自己
-          if check_s_id == s_id and dep_t in dest_t_map:
-            best_match = dest_t_map[dep_t]
-
-          if best_match:
-            collected_stops.append({
-                "StationID": check_s_id,
-                "StationName": check_s_name,
-                "ArrivalTime": best_match["ArrivalTime"],
-                "DepartureTime": best_match["DepartureTime"],
-                "Index": station_indices[check_s_id],
-            })
-            curr_ref_min = time_to_min(best_match["DepartureTime"])
-
-    collected_stops.sort(
-        key=lambda x: x["Index"],
-        reverse=(not is_heading_yingge),
-    )
-
-    trips_lookup[trip_key] = {
-        "DestinationName": dest_name,
-        "SystemSeq": sys_seq,
-        "DepartureTime": dep_t,
-        "StartStation": station_map.get(s_id, s_id),
-        "Stops": [
-            {
-                "StationID": st["StationID"],
-                "StationName": st["StationName"],
-                "ArrivalTime": st["ArrivalTime"],
-                "DepartureTime": st["DepartureTime"],
-            }
-            for st in collected_stops
-        ],
-    }
-
-    ev["trip_key"] = trip_key
-    ev["sys_seq"] = sys_seq
-
-# 4. 建立各車站的查詢列表
-station_display_data = []
-
-for s_id, s_name in stations_ordered:
-  for dest_id in ["LB12", "LB01"]:
-    if s_id in station_time_map and dest_id in station_time_map[s_id]:
-      dest_name = "鶯桃福德" if dest_id == "LB12" else "頂埔"
-      station_timetables = []
-
-      station_deps = sorted(
-          list(station_time_map[s_id][dest_id].keys()), key=time_to_min
+      collected_stops.sort(
+          key=lambda x: x["Index"],
+          reverse=(not is_heading_yingge),
       )
 
-      for t_item_dep in station_deps:
-        t_obj = station_time_map[s_id][dest_id][t_item_dep]
+      trips_lookup[trip_key] = {
+          "DestinationName": dest_name,
+          "SystemSeq": sys_seq,
+          "DepartureTime": dep_t,
+          "StartStation": station_map.get(s_id, s_id),
+          "Stops": [
+              {
+                  "StationID": st["StationID"],
+                  "StationName": st["StationName"],
+                  "ArrivalTime": st["ArrivalTime"],
+                  "DepartureTime": st["DepartureTime"],
+              }
+              for st in collected_stops
+          ],
+      }
 
-        matched_trip_key = ""
-        matched_seq = 1
-        for ev in events_by_dest[dest_id]:
-          if ev["station_id"] == s_id and ev["dep_time"] == t_item_dep:
-            matched_trip_key = ev["trip_key"]
-            matched_seq = ev["sys_seq"]
-            break
+      ev["trip_key"] = trip_key
+      ev["sys_seq"] = sys_seq
 
-        station_timetables.append({
-            "Sequence": matched_seq,
-            "ArrivalTime": t_obj["ArrivalTime"],
-            "DepartureTime": t_obj["DepartureTime"],
-            "TripKey": matched_trip_key,
+  for s_id, s_name in stations_ordered:
+    for dest_id in ["LB12", "LB01"]:
+      if s_id in station_time_map and dest_id in station_time_map[s_id]:
+        dest_name = "鶯桃福德" if dest_id == "LB12" else "頂埔"
+        station_timetables = []
+
+        station_deps = sorted(
+            list(station_time_map[s_id][dest_id].keys()), key=time_to_min
+        )
+
+        for t_item_dep in station_deps:
+          t_obj = station_time_map[s_id][dest_id][t_item_dep]
+
+          matched_trip_key = ""
+          matched_seq = 1
+          for ev in events_by_dest[dest_id]:
+            if ev["station_id"] == s_id and ev["dep_time"] == t_item_dep:
+              matched_trip_key = ev["trip_key"]
+              matched_seq = ev["sys_seq"]
+              break
+
+          station_timetables.append({
+              "Sequence": matched_seq,
+              "ArrivalTime": t_obj["ArrivalTime"],
+              "DepartureTime": t_obj["DepartureTime"],
+              "TripKey": matched_trip_key,
+          })
+
+        all_station_display_data.append({
+            "ServiceTag": tag,
+            "StationID": s_id,
+            "StationName": {"Zh_tw": s_name},
+            "DestinationStaionID": dest_id,
+            "DestinationStationName": {"Zh_tw": dest_name},
+            "Timetables": station_timetables,
         })
 
-      station_display_data.append({
-          "StationID": s_id,
-          "StationName": {"Zh_tw": s_name},
-          "DestinationStaionID": dest_id,
-          "DestinationStationName": {"Zh_tw": dest_name},
-          "Timetables": station_timetables,
-      })
+  all_trips_lookup[tag] = trips_lookup
 
-# 5. 輸出 JSON 與 HTML
-json_str = json.dumps(station_display_data, ensure_ascii=False)
-trips_str = json.dumps(trips_lookup, ensure_ascii=False)
+json_str = json.dumps(all_station_display_data, ensure_ascii=False)
+trips_str = json.dumps(all_trips_lookup, ensure_ascii=False)
 
+# 3. 輸出包含平日與假日按鈕的 HTML
 html_content = (
     """<!DOCTYPE html>
 <html lang="zh-TW">
@@ -229,6 +239,31 @@ html_content = (
       font-size: 0.95rem;
     }
     select:focus, input:focus { border-color: #39C0E1; }
+    
+    /* 營運日切換按鈕群組 */
+    .day-selector {
+      display: flex;
+      gap: 10px;
+      margin-bottom: 15px;
+    }
+    .day-btn {
+      flex: 1;
+      padding: 10px;
+      background: #252525;
+      border: 1px solid #444;
+      border-radius: 8px;
+      color: #aaa;
+      font-weight: bold;
+      cursor: pointer;
+      font-size: 0.9rem;
+      transition: all 0.2s;
+    }
+    .day-btn.active {
+      background: #39C0E1;
+      color: #121212;
+      border-color: #39C0E1;
+    }
+
     .calc-btn { 
       width: 100%;
       background: #39C0E1; 
@@ -347,7 +382,13 @@ html_content = (
 
   <div class="calculator">
     <h1>新北捷運三鶯線時刻表</h1>
-    <div class="label-hint">請選擇您想要查詢的車站與行駛方向：</div>
+    <div class="label-hint">請選擇營運日、車站與行駛方向：</div>
+
+    <!-- 平日 / 假日 切換按鈕 -->
+    <div class="day-selector">
+      <button class="day-btn active" id="sanying-timetable-weekday" data-tag="平日">平日班表</button>
+      <button class="day-btn" id="sanying-timetable-holiday" data-tag="假日">例假日班表</button>
+    </div>
 
     <div class="input-group">
       <label for="stationSelect">選擇車站</label>
@@ -415,14 +456,20 @@ html_content = (
   </div>
 
   <script>
-    const sanyingData = """ + json_str + """;
-    const tripsLookup = """ + trips_str + """;
+    const allSanyingData = """ + json_str + """;
+    const allTripsLookup = """ + trips_str + """;
 
-    document.addEventListener("DOMContentLoaded", () => {
+    let currentServiceTag = "平日";
+
+    function updateStationOptions() {
       const stationSelect = document.getElementById("stationSelect");
-      const stationsMap = new Map();
+      const currentSelectedStation = stationSelect.value;
+      stationSelect.innerHTML = '<option value="">-- 請選擇車站 --</option>';
       
-      sanyingData.forEach(item => {
+      const stationsMap = new Map();
+      const filteredData = allSanyingData.filter(item => item.ServiceTag === currentServiceTag);
+
+      filteredData.forEach(item => {
         if (!stationsMap.has(item.StationID)) {
           stationsMap.set(item.StationID, item.StationName.Zh_tw);
         }
@@ -433,6 +480,33 @@ html_content = (
         option.value = id;
         option.textContent = id + " " + name;
         stationSelect.appendChild(option);
+      });
+
+      // 如果原本選的車站在此日也存在，保持選取
+      if (stationsMap.has(currentSelectedStation)) {
+        stationSelect.value = currentSelectedStation;
+      } else {
+        document.getElementById("directionSelect").innerHTML = '<option value="">-- 請先選擇車站 --</option>';
+        document.getElementById("directionSelect").disabled = true;
+      }
+    }
+
+    document.addEventListener("DOMContentLoaded", () => {
+      updateStationOptions();
+
+      // 綁定平日與假日按鈕事件
+      document.getElementById("sanying-timetable-weekday").addEventListener("click", function() {
+        document.getElementById("sanying-timetable-holiday").classList.remove("active");
+        this.classList.add("active");
+        currentServiceTag = "平日";
+        updateStationOptions();
+      });
+
+      document.getElementById("sanying-timetable-holiday").addEventListener("click", function() {
+        document.getElementById("sanying-timetable-weekday").classList.remove("active");
+        this.classList.add("active");
+        currentServiceTag = "假日";
+        updateStationOptions();
       });
     });
 
@@ -446,7 +520,8 @@ html_content = (
         return;
       }
 
-      const availableDestinations = sanyingData.filter(item => item.StationID === stationId);
+      const filteredData = allSanyingData.filter(item => item.ServiceTag === currentServiceTag);
+      const availableDestinations = filteredData.filter(item => item.StationID === stationId);
       const destMap = new Map();
 
       availableDestinations.forEach(item => {
@@ -476,7 +551,8 @@ html_content = (
         return;
       }
 
-      const targetData = sanyingData.find(item => item.StationID === stationId && item.DestinationStaionID === destId);
+      const filteredData = allSanyingData.filter(item => item.ServiceTag === currentServiceTag);
+      const targetData = filteredData.find(item => item.StationID === stationId && item.DestinationStaionID === destId);
 
       if (!targetData || !targetData.Timetables || targetData.Timetables.length === 0) {
         tbody.innerHTML = '<tr><td colspan="4" class="empty-msg">查無相關時刻表資料</td></tr>';
@@ -509,7 +585,7 @@ html_content = (
       });
 
       tbody.innerHTML = html;
-      resultCount.textContent = "查詢結果：共 " + targetData.Timetables.length + " 筆班次";
+      resultCount.textContent = "查詢結果 (" + currentServiceTag + ")：共 " + targetData.Timetables.length + " 筆班次";
 
       setTimeout(() => {
         const highlightedRow = tbody.querySelector('.highlight-row');
@@ -521,7 +597,9 @@ html_content = (
       tbody.querySelectorAll('tr[data-trip]').forEach(tr => {
         tr.addEventListener('click', function() {
           const tKey = this.getAttribute('data-trip');
+          const tripsLookup = allTripsLookup[currentServiceTag];
           const tripInfo = tripsLookup[tKey];
+          
           if (!tripInfo || !tripInfo.Stops || tripInfo.Stops.length === 0) {
             alert('查無此車次的詳細行經站紀錄');
             return;
@@ -559,4 +637,7 @@ html_content = (
 with open("index.html", "w", encoding="utf-8") as f:
   f.write(html_content)
 
-print("成功產生完整無誤的 index.html！")
+print(
+    "成功產生包含 平日 (sanying-timetable-weekday) 與 假日"
+    " (sanying-timetable-holiday) 按鈕的 index.html！"
+)
