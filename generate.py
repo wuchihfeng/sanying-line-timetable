@@ -4,7 +4,7 @@ import json
 with open("sanying_timetable.json", "r", encoding="utf-8-sig") as f:
   full_data = json.load(f)
 
-# 2. 定義三鶯線標準站點順序 (LB01 -> LB12)
+# 2. 定義三鶯線標準站點順序 (由北到南: LB01 -> LB12)
 stations_ordered = [
     ("LB01", "頂埔"),
     ("LB02", "媽祖田"),
@@ -30,7 +30,7 @@ def time_to_min(t_str):
   return h * 60 + m
 
 
-# 3. 建立全域時間索引
+# 3. 建立全域時間索引: time_index[station_id][dest_id] = [ {dep_min, arr_time, dep_time}, ... ]
 time_index = {}
 for station in full_data:
   s_id = station["StationID"]
@@ -48,10 +48,9 @@ for station in full_data:
         "DepartureTime": t["DepartureTime"],
         "DepMin": dep_m,
         "ArrMin": arr_m,
-        "Sequence": t["Sequence"],
     })
 
-# 4. 全線單向貫通推導引擎（確保方向一致，絕不倒退嚕）
+# 4. 全線貫通貪婪時序對齊引擎
 trips_lookup = {}
 
 for station in full_data:
@@ -67,76 +66,93 @@ for station in full_data:
     if trip_key in trips_lookup:
       continue
 
-    current_s_idx = station_indices.get(s_id, 0)
-    # 判定行進方向：若目的地代號大於當前站，則是正向 (LB01 -> LB12)；否則為反向
-    dest_idx = station_indices.get(dest_id, current_s_idx)
-    is_forward = dest_idx > current_s_idx
+    # 判斷行進方向：若目的地是 LB12，則是正向 (LB01 -> LB12)；若目的地是 LB01，則是反向 (LB12 -> LB01)
+    is_heading_to_yingge = dest_id == "LB12"
+    route_indices = (
+        list(range(len(stations_ordered)))
+        if is_heading_to_yingge
+        else list(range(len(stations_ordered) - 1, -1, -1))
+    )
 
-    matched_stops = []
+    current_s_idx = station_indices.get(s_id, 0)
+    matched_stops = {}
+
     # 放入當前點
-    matched_stops.append({
+    matched_stops[s_id] = {
         "StationID": s_id,
         "StationName": station_map.get(s_id, s_id),
         "ArrivalTime": t["ArrivalTime"],
         "DepartureTime": t["DepartureTime"],
         "SortMin": base_dep_min,
-        "Index": current_s_idx,
-    })
+    }
 
-    # 嚴格單向擴展：依序往終點方向或起點方向把整條線各站抓出來
-    # 往回推 (Past stations)
-    curr_idx = current_s_idx + (1 if not is_forward else -1)
+    # A. 順著行進方向往後找 (例如從當前站往終點找)
     ref_min = base_dep_min
-    while 0 <= curr_idx < len(stations_ordered):
-      p_id, p_name = stations_ordered[curr_idx]
-      if p_id in time_index and dest_id in time_index[p_id]:
-        # 尋找時間合理的匹配
-        candidates = time_index[p_id][dest_id]
-        # 依方向過濾時間
-        if is_forward:
-          valid = [c for c in candidates if c["DepMin"] < ref_min]
-          if valid:
-            best = max(valid, key=lambda x: x["DepMin"])
-            matched_stops.append({
-                "StationID": p_id,
-                "StationName": p_name,
-                "ArrivalTime": best["ArrivalTime"],
-                "DepartureTime": best["DepartureTime"],
-                "SortMin": best["DepMin"],
-                "Index": curr_idx,
-            })
-            ref_min = best["DepMin"]
-        else:
-          valid = [c for c in candidates if c["DepMin"] > ref_min]
-          if valid:
-            best = min(valid, key=lambda x: x["DepMin"])
-            matched_stops.append({
-                "StationID": p_id,
-                "StationName": p_name,
-                "ArrivalTime": best["ArrivalTime"],
-                "DepartureTime": best["DepartureTime"],
-                "SortMin": best["DepMin"],
-                "Index": curr_idx,
-            })
-            ref_min = best["DepMin"]
-      curr_idx += 1 if not is_forward else -1
+    start_pos = route_indices.index(current_s_idx)
+    for pos in range(start_pos + 1, len(route_indices)):
+      st_idx = route_indices[pos]
+      st_id, st_name = stations_ordered[st_idx]
 
-    # 依照站點真實物理順序排序 (LB01 到 LB12)
-    matched_stops.sort(key=lambda x: x["Index"])
+      if st_id in time_index and dest_id in time_index[st_id]:
+        candidates = time_index[st_id][dest_id]
+        # 尋找發車時間大於參考時間，且差距在 1 到 12 分鐘內的班次
+        valid = [c for c in candidates if 0 < (c["DepMin"] - ref_min) <= 12]
+        if valid:
+          best = min(valid, key=lambda x: x["DepMin"] - ref_min)
+          matched_stops[st_id] = {
+              "StationID": st_id,
+              "StationName": st_name,
+              "ArrivalTime": best["ArrivalTime"],
+              "DepartureTime": best["DepartureTime"],
+              "SortMin": best["DepMin"],
+          }
+          ref_min = best["DepMin"]
+        else:
+          # 如果找不到完美符合的，用預估時間差補上或直接中斷
+          break
+
+    # B. 逆著行進方向往前找 (例如從當前站往起點找)
+    ref_min = base_dep_min
+    for pos in range(start_pos - 1, -1, -1):
+      st_idx = route_indices[pos]
+      st_id, st_name = stations_ordered[st_idx]
+
+      if st_id in time_index and dest_id in time_index[st_id]:
+        candidates = time_index[st_id][dest_id]
+        # 尋找發車時間小於參考時間，且差距在 1 到 12 分鐘內的班次
+        valid = [c for c in candidates if 0 < (ref_min - c["DepMin"]) <= 12]
+        if valid:
+          best = min(valid, key=lambda x: ref_min - x["DepMin"])
+          matched_stops[st_id] = {
+              "StationID": st_id,
+              "StationName": st_name,
+              "ArrivalTime": best["ArrivalTime"],
+              "DepartureTime": best["DepartureTime"],
+              "SortMin": best["DepMin"],
+          }
+          ref_min = best["DepMin"]
+        else:
+          break
+
+    # 將收集到的站點依照三鶯線物理順序完美排列
+    final_stops_list = []
+    for st_id, st_name in stations_ordered:
+      if st_id in matched_stops:
+        final_stops_list.append(matched_stops[st_id])
+
+    # 如果方向是往頂埔，物理順序需要反過來由大到小展示嗎？
+    # 使用者查詢時希望彈窗永遠由起點排到終點，或者按 LB01 -> LB12 排列。
+    # 為了閱讀直覺，若方向是往頂埔，我們讓它從 LB12 排序到 LB01；若是往鶯歌，從 LB01 到 LB12。
+    if not is_heading_to_yingge:
+      final_stops_list.sort(key=lambda x: station_indices[x["StationID"]], reverse=True)
+    else:
+      final_stops_list.sort(key=lambda x: station_indices[x["StationID"]])
 
     trips_lookup[trip_key] = {
         "DestinationName": dest_name,
         "Sequence": t["Sequence"],
         "DepartureTime": base_dep_str,
-        "Stops": [
-            {
-                "StationID": s["StationID"],
-                "StationName": s["StationName"],
-                "ArrivalTime": s["ArrivalTime"],
-                "DepartureTime": s["DepartureTime"],
-            }
-            for s in matched_stops
-        ],
+        "Stops": final_stops_list,
     }
 
 # 5. 轉成 JSON 格式
@@ -306,7 +322,7 @@ html_content = (
 
   <div class="calculator">
     <h1>新北捷運三鶯線時刻表</h1>
-    <div class="label-hint">請選擇您想要查詢的車站與行駛方向（點擊任一班次可檢視完整全線站點）：</div>
+    <div class="label-hint">請選擇您想要查詢的車站與行駛方向（點擊任一班次可檢視完整全線貫通站點）：</div>
 
     <div class="input-group">
       <label for="stationSelect">選擇車站</label>
@@ -366,7 +382,7 @@ html_content = (
             </tr>
           </thead>
           <tbody id="modalBody">
-            <!-- 動態插入全線貫通停靠站 -->
+            <!-- 動態插入全線貫通對齊後的停靠站 -->
           </tbody>
         </table>
       </div>
@@ -472,7 +488,7 @@ html_content = (
       });
 
       tbody.innerHTML = html;
-      resultCount.textContent = "查詢結果：共 " + targetData.Timetables.length + " 筆班次 (點擊可看全線站點)";
+      resultCount.textContent = "查詢結果：共 " + targetData.Timetables.length + " 筆班次 (點擊可看全線貫通站點)";
 
       setTimeout(() => {
         const highlightedRow = tbody.querySelector('.highlight-row');
@@ -523,4 +539,4 @@ html_content = (
 with open("index.html", "w", encoding="utf-8") as f:
   f.write(html_content)
 
-print("成功產生 index.html！")
+print("成功產生全線單向貪婪對齊、完美貫通的 index.html！")
