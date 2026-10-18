@@ -4,7 +4,7 @@ import json
 with open("sanying_timetable.json", "r", encoding="utf-8-sig") as f:
   full_data = json.load(f)
 
-# 2. 建立站點順序對照表 (LB01 -> LB12)
+# 2. 定義三鶯線標準站點順序 (由北到南 / 由南到北)
 stations_ordered = [
     ("LB01", "頂埔"),
     ("LB02", "媽祖田"),
@@ -20,22 +20,39 @@ stations_ordered = [
     ("LB12", "鶯桃福德"),
 ]
 station_map = {s_id: s_name for s_id, s_name in stations_ordered}
+station_indices = {s_id: idx for idx, (s_id, _) in enumerate(stations_ordered)}
 
-# 3. 建立 station_time_index: [station_id][dest_id][dep_time] = timetable_item
-station_time_index = {}
+
+def time_to_min(t_str):
+  """將 HH:MM 轉為當天總分鐘數，方便數學比較"""
+  if not t_str or ":" not in t_str:
+    return -1
+  h, m = map(int, t_str.split(":"))
+  return h * 60 + m
+
+
+# 3. 建立全域時間索引: time_index[station_id][dest_id] = [ {dep_min, arr_time, dep_time, ...}, ... ]
+time_index = {}
 for station in full_data:
   s_id = station["StationID"]
   dest_id = station["DestinationStaionID"]
-  if s_id not in station_time_index:
-    station_time_index[s_id] = {}
-  if dest_id not in station_time_index[s_id]:
-    station_time_index[s_id][dest_id] = {}
+  if s_id not in time_index:
+    time_index[s_id] = {}
+  if dest_id not in time_index[s_id]:
+    time_index[s_id][dest_id] = []
 
   for t in station.get("Timetables", []):
-    station_time_index[s_id][dest_id][t["DepartureTime"]] = t
+    dep_m = time_to_min(t["DepartureTime"])
+    arr_m = time_to_min(t["ArrivalTime"])
+    time_index[s_id][dest_id].append({
+        "ArrivalTime": t["ArrivalTime"],
+        "DepartureTime": t["DepartureTime"],
+        "DepMin": dep_m,
+        "ArrMin": arr_m,
+        "Sequence": t["Sequence"],
+    })
 
-# 4. 時序接龍與軌跡推導引擎
-# 目標：為每一筆單站發車紀錄，向前/向後推導出它在整條線上完整的停靠足跡
+# 4. 真正的「時序接龍」軌跡推導引擎
 trips_lookup = {}
 
 for station in full_data:
@@ -44,49 +61,104 @@ for station in full_data:
   dest_name = station["DestinationStationName"]["Zh_tw"]
 
   for t in station.get("Timetables", []):
-    dep_time = t["DepartureTime"]
-    trip_key = f"{dest_id}_{dep_time}_{t['Sequence']}"
+    base_dep_str = t["DepartureTime"]
+    base_dep_min = time_to_min(base_dep_str)
+    trip_key = f"{dest_id}_{base_dep_str}_{t['Sequence']}"
 
     if trip_key in trips_lookup:
       continue
 
-    # 開始進行時序接龍推導：找出這班車在全線各站的停靠時間
-    stops = []
-    current_time = dep_time
-    
-    # 決定搜尋方向：若終點是鶯歌/鶯桃福德(LB12等)，方向通常由北向南；若往頂埔(LB01)，方向由南向北
-    # 我們根據站點代號排序進行匹配
-    is_heading_up = (dest_id == "LB01")
-    search_stations = sorted(stations_ordered, key=lambda x: x[0], reverse=is_heading_up)
+    # 決定行進方向 (依據起點與終點站的索引大小)
+    # 若 dest_id 的索引大於 s_id，代表方向是正向 (LB01 -> LB12)；反之為逆向
+    current_s_idx = station_indices.get(s_id, 0)
+    # 從終點站 ID 推出方向
+    is_forward = True
+    if dest_id in station_indices:
+      # 如果終點站代號比當前站小，通常是往頂埔方向
+      dest_idx = station_indices[dest_id]
+      is_forward = dest_idx > current_s_idx
 
-    # 為了確保能抓出整條線的軌跡，我們用時間差與序號進行嚴格比對
-    # 尋找每一個站點上有沒有時間合理銜接的班次
+    # 開始進行一站一站的時間比對與時序接龍
     matched_stops = []
-    for st_id, st_name in search_stations:
-      if st_id in station_time_index and dest_id in station_time_index[st_id]:
-        dest_dict = station_time_index[st_id][dest_id]
-        # 尋找相同 Sequence 或者是發車時間最接近的紀錄
-        found = None
-        for d_time, t_obj in dest_dict.items():
-          if t_obj["Sequence"] == t["Sequence"]:
-            found = t_obj
-            break
-        
-        if found:
-          matched_stops.append({
-              "StationID": st_id,
-              "StationName": st_name,
-              "ArrivalTime": found["ArrivalTime"],
-              "DepartureTime": found["DepartureTime"],
-          })
+    current_time_ref = base_dep_min
 
-    # 依照站點代號重新排序確保由小到大 (LB01 -> LB12) 完整呈現整條線的行經站
-    matched_stops.sort(key=lambda x: x["StationID"])
+    # 先記錄當前這站
+    matched_stops.append({
+        "StationID": s_id,
+        "StationName": station_map.get(s_id, s_id),
+        "ArrivalTime": t["ArrivalTime"],
+        "DepartureTime": t["DepartureTime"],
+        "SortMin": base_dep_min,
+    })
+
+    # 1. 往前推導（追溯這班車在前面各站的時間）
+    prev_idx = current_s_idx - 1 if is_forward else current_s_idx + 1
+    ref_time = base_dep_min
+    while 0 <= prev_idx < len(stations_ordered):
+      p_id, p_name = stations_ordered[prev_idx]
+      if p_id in time_index and dest_id in time_index[p_id]:
+        # 尋找前一站發車時間小於目前參考時間，且差距在 1~10 分鐘內的班次
+        candidates = [
+            item
+            for item in time_index[p_id][dest_id]
+            if 0 < (ref_time - item["DepMin"]) <= 12
+        ]
+        if candidates:
+          # 取時間最接近的上一站
+          best_match = min(candidates, key=lambda x: ref_time - x["DepMin"])
+          matched_stops.insert(
+              0,
+              {
+                  "StationID": p_id,
+                  "StationName": p_name,
+                  "ArrivalTime": best_match["ArrivalTime"],
+                  "DepartureTime": best_match["DepartureTime"],
+                  "SortMin": best_match["DepMin"],
+              },
+          )
+          ref_time = best_match["DepMin"]
+          prev_idx = prev_idx - 1 if is_forward else prev_idx + 1
+        else:
+          break
+      else:
+        break
+
+    # 2. 往後推導（追蹤這班車在後面各站的時間）
+    next_idx = current_s_idx + 1 if is_forward else current_s_idx - 1
+    ref_time = base_dep_min
+    while 0 <= next_idx < len(stations_ordered):
+      n_id, n_name = stations_ordered[next_idx]
+      if n_id in time_index and dest_id in time_index[n_id]:
+        # 尋找下一站發車時間大於目前參考時間，且差距在 1~10 分鐘內的班次
+        candidates = [
+            item
+            for item in time_index[n_id][dest_id]
+            if 0 < (item["DepMin"] - ref_time) <= 12
+        ]
+        if candidates:
+          # 取時間最接近的下一站
+          best_match = min(candidates, key=lambda x: x["DepMin"] - ref_time)
+          matched_stops.append({
+              "StationID": n_id,
+              "StationName": n_name,
+              "ArrivalTime": best_match["ArrivalTime"],
+              "DepartureTime": best_match["DepartureTime"],
+              "SortMin": best_match["DepMin"],
+          })
+          ref_time = best_match["DepMin"]
+          next_idx = next_idx + 1 if is_forward else next_idx - 1
+        else:
+          break
+      else:
+        break
+
+    # 3. 確保所有停靠站完全依照「時間先後順序」排序！
+    matched_stops.sort(key=lambda x: x["SortMin"])
 
     trips_lookup[trip_key] = {
         "DestinationName": dest_name,
         "Sequence": t["Sequence"],
-        "DepartureTime": dep_time,
+        "DepartureTime": base_dep_str,
         "Stops": matched_stops,
     }
 
@@ -257,7 +329,7 @@ html_content = (
 
   <div class="calculator">
     <h1>新北捷運三鶯線時刻表</h1>
-    <div class="label-hint">請選擇您想要查詢的車站與行駛方向（點擊任一班次可檢視全線完整停靠站）：</div>
+    <div class="label-hint">請選擇您想要查詢的車站與行駛方向（點擊任一班次可檢視按時間排序的完整行經站）：</div>
 
     <div class="input-group">
       <label for="stationSelect">選擇車站</label>
@@ -317,7 +389,7 @@ html_content = (
             </tr>
           </thead>
           <tbody id="modalBody">
-            <!-- 動態插入完整停靠站 -->
+            <!-- 動態插入按時間排序的停靠站 -->
           </tbody>
         </table>
       </div>
@@ -423,7 +495,7 @@ html_content = (
       });
 
       tbody.innerHTML = html;
-      resultCount.textContent = "查詢結果：共 " + targetData.Timetables.length + " 筆班次 (點擊任一班次可看全線行經站)";
+      resultCount.textContent = "查詢結果：共 " + targetData.Timetables.length + " 筆班次 (點擊可看按時間排序的行經站)";
 
       setTimeout(() => {
         const highlightedRow = tbody.querySelector('.highlight-row');
@@ -437,7 +509,7 @@ html_content = (
           const tKey = this.getAttribute('data-trip');
           const tripInfo = tripsLookup[tKey];
           if (!tripInfo || !tripInfo.Stops || tripInfo.Stops.length === 0) {
-            alert('查無此車次的完整行經站紀錄');
+            alert('查無此車次的詳細行經站紀錄');
             return;
           }
 
@@ -474,4 +546,6 @@ html_content = (
 with open("index.html", "w", encoding="utf-8") as f:
   f.write(html_content)
 
-print("成功產生 index.html！")
+print(
+    "成功產生 index.html！"
+)
