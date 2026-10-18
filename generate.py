@@ -37,7 +37,7 @@ html_content = (
       box-shadow: 0 12px 30px rgba(0,0,0,0.45); 
       overflow: hidden;  
     }
-    h1 { font-size: 1.25rem; color: #ff9800; text-align: center; margin: 0 0 15px; }
+    h1 { font-size: 1.25rem; color: #39C0E1; text-align: center; margin: 0 0 15px; }
     .label-hint { font-size: 0.8rem; color: #888; margin-bottom: 10px; }
     .input-group { margin-bottom: 15px; }
     label { display: block; font-size: 0.82rem; margin-bottom: 6px; color: #aaa; }
@@ -51,10 +51,10 @@ html_content = (
       outline: none; 
       font-size: 0.95rem;
     }
-    select:focus, input:focus { border-color: #ff9800; }
+    select:focus, input:focus { border-color: #39C0E1; }
     .calc-btn { 
       width: 100%;
-      background: #ff9800; 
+      background: #39C0E1; 
       color: #121212; 
       border: none; 
       padding: 12px; 
@@ -64,7 +64,7 @@ html_content = (
       font-size: 0.95rem;
       transition: background 0.2s;
     }
-    .calc-btn:hover { background: #e68a00; }
+    .calc-btn:hover { background: #2aa8c4; }
     hr { border: 0; border-top: 1px solid #333; margin: 20px 0; }
     .result-container {
       margin-top: 15px;
@@ -72,7 +72,7 @@ html_content = (
       overflow-y: auto;
     }
     .result-container::-webkit-scrollbar { width: 4px; }
-    .result-container::-webkit-scrollbar-thumb { background: #ff9800; border-radius: 10px; }
+    .result-container::-webkit-scrollbar-thumb { background: #39C0E1; border-radius: 10px; }
     .record-table {
       width: 100%;
       border-collapse: collapse;
@@ -82,7 +82,7 @@ html_content = (
     .record-table th {
       padding: 10px 8px;
       border-bottom: 2px solid #333;
-      color: #ff9800;
+      color: #39C0E1;
       font-weight: 600;
       background: #222;
       position: sticky;
@@ -94,11 +94,11 @@ html_content = (
       color: #ccc;
     }
     .record-table tr:hover {
-      background-color: rgba(255, 152, 0, 0.05);
+      background-color: rgba(57, 192, 225, 0.05);
     }
     .badge {
-      background: rgba(255, 152, 0, 0.15);
-      color: #ff9800;
+      background: rgba(57, 192, 225, 0.15);
+      color: #39C0E1;
       padding: 3px 6px;
       border-radius: 4px;
       font-size: 0.75rem;
@@ -255,4 +255,4 @@ html_content = (
 with open("index.html", "w", encoding="utf-8") as f:
   f.write(html_content)
 
-print("成功產生 index.html！")
+print("成功產生 index.html（主題色已更新為 #39C0E1）！")
