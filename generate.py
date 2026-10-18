@@ -256,4 +256,3 @@ with open("index.html", "w", encoding="utf-8") as f:
   f.write(html_content)
 
 print("成功產生無邊框、自適應寬度的 index.html！")
-w
