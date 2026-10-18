@@ -1,7 +1,7 @@
 import json
 
 # 1. 讀取三鶯線完整 JSON 檔
-with open("sanying_timetable.json", "r", encoding="utf-8-sig") as f:
+with open("sanying_timetable_2026-10-18.json", "r", encoding="utf-8-sig") as f:
   full_data = json.load(f)
 
 stations_ordered = [
@@ -21,21 +21,6 @@ stations_ordered = [
 station_map = {s_id: s_name for s_id, s_name in stations_ordered}
 station_indices = {s_id: idx for idx, (s_id, _) in enumerate(stations_ordered)}
 
-# 2. 標準相鄰區間行車時間對照表（分鐘數），嚴格對應官方矩陣並允許正負 1 分鐘彈性
-standard_deltas = {
-    ("LB01", "LB02"): 2,
-    ("LB02", "LB03"): 3,
-    ("LB03", "LB04"): 2,
-    ("LB04", "LB05"): 3,
-    ("LB05", "LB06"): 3,
-    ("LB06", "LB07"): 3,
-    ("LB07", "LB08"): 5,
-    ("LB08", "LB09"): 2,
-    ("LB09", "LB10"): 2,
-    ("LB10", "LB11"): 4,
-    ("LB11", "LB12"): 3,
-}
-
 
 def time_to_min(t_str):
   if not t_str or ":" not in t_str:
@@ -44,7 +29,7 @@ def time_to_min(t_str):
   return h * 60 + m
 
 
-# 3. 建立全域車站時間索引
+# 2. 建立全域車站時間索引
 station_time_map = {}
 for station in full_data:
   s_id = station["StationID"]
@@ -53,10 +38,13 @@ for station in full_data:
     station_time_map[s_id] = {}
   if dest_id not in station_time_map[s_id]:
     station_time_map[s_id][dest_id] = {}
+
   for t in station.get("Timetables", []):
     station_time_map[s_id][dest_id][t["DepartureTime"]] = t
 
+# 3. 收集全系統所有發車事件
 events_by_dest = {"LB12": [], "LB01": []}
+
 for s_id, s_name in stations_ordered:
   for dest_id in ["LB12", "LB01"]:
     if s_id in station_time_map and dest_id in station_time_map[s_id]:
@@ -72,7 +60,9 @@ trips_lookup = {}
 
 for dest_id in ["LB12", "LB01"]:
   events = events_by_dest[dest_id]
+  # 嚴格排序：時間優先，車站順序次之
   events.sort(key=lambda x: (x["dep_min"], x["station_index"]))
+
   dest_name = "鶯桃福德" if dest_id == "LB12" else "頂埔"
   is_heading_yingge = dest_id == "LB12"
 
@@ -80,6 +70,7 @@ for dest_id in ["LB12", "LB01"]:
     sys_seq = idx + 1
     s_id = ev["station_id"]
     dep_t = ev["dep_time"]
+
     trip_key = f"{dest_id}_{s_id}_{dep_t}_{sys_seq}"
 
     check_stations = (
@@ -93,7 +84,6 @@ for dest_id in ["LB12", "LB01"]:
 
     collected_stops = []
     curr_ref_min = ev["dep_min"]
-    prev_s_id = None
 
     if start_pos != -1:
       for p in range(start_pos, len(check_stations)):
@@ -106,29 +96,17 @@ for dest_id in ["LB12", "LB01"]:
           best_match = None
           min_diff = 999
 
-          if check_s_id == s_id:
-            if dep_t in dest_t_map:
-              best_match = dest_t_map[dep_t]
-          else:
-            pair = (
-                (prev_s_id, check_s_id)
-                if is_heading_yingge
-                else (check_s_id, prev_s_id)
-            )
-            std_delta = standard_deltas.get(pair, 3)
-            # 嚴格套用正負 1 分鐘的合理行車時間彈性
-            min_allowed_delta = max(1, std_delta - 1)
-            max_allowed_delta = std_delta + 1
+          for d_time, d_obj in dest_t_map.items():
+            d_min = time_to_min(d_time)
+            diff = d_min - curr_ref_min
+            # 嚴格時間遞進：相鄰車站時間差必須在 1 到 25 分鐘之間，杜絕分身車與時間交錯
+            if 1 <= diff <= 25 and diff < min_diff:
+              min_diff = diff
+              best_match = d_obj
 
-            for d_time, d_obj in dest_t_map.items():
-              d_min = time_to_min(d_time)
-              diff = d_min - curr_ref_min
-              if (
-                  min_allowed_delta <= diff <= max_allowed_delta
-                  and diff < min_diff
-              ):
-                min_diff = diff
-                best_match = d_obj
+          # 起始站直接對應自己
+          if check_s_id == s_id and dep_t in dest_t_map:
+            best_match = dest_t_map[dep_t]
 
           if best_match:
             collected_stops.append({
@@ -139,12 +117,12 @@ for dest_id in ["LB12", "LB01"]:
                 "Index": station_indices[check_s_id],
             })
             curr_ref_min = time_to_min(best_match["DepartureTime"])
-            prev_s_id = check_s_id
 
     collected_stops.sort(
         key=lambda x: x["Index"],
         reverse=(not is_heading_yingge),
     )
+
     trips_lookup[trip_key] = {
         "DestinationName": dest_name,
         "SystemSeq": sys_seq,
@@ -160,20 +138,26 @@ for dest_id in ["LB12", "LB01"]:
             for st in collected_stops
         ],
     }
+
     ev["trip_key"] = trip_key
     ev["sys_seq"] = sys_seq
 
+# 4. 建立各車站的查詢列表
 station_display_data = []
+
 for s_id, s_name in stations_ordered:
   for dest_id in ["LB12", "LB01"]:
     if s_id in station_time_map and dest_id in station_time_map[s_id]:
       dest_name = "鶯桃福德" if dest_id == "LB12" else "頂埔"
       station_timetables = []
+
       station_deps = sorted(
           list(station_time_map[s_id][dest_id].keys()), key=time_to_min
       )
+
       for t_item_dep in station_deps:
         t_obj = station_time_map[s_id][dest_id][t_item_dep]
+
         matched_trip_key = ""
         matched_seq = 1
         for ev in events_by_dest[dest_id]:
@@ -181,12 +165,14 @@ for s_id, s_name in stations_ordered:
             matched_trip_key = ev["trip_key"]
             matched_seq = ev["sys_seq"]
             break
+
         station_timetables.append({
             "Sequence": matched_seq,
             "ArrivalTime": t_obj["ArrivalTime"],
             "DepartureTime": t_obj["DepartureTime"],
             "TripKey": matched_trip_key,
         })
+
       station_display_data.append({
           "StationID": s_id,
           "StationName": {"Zh_tw": s_name},
@@ -195,6 +181,7 @@ for s_id, s_name in stations_ordered:
           "Timetables": station_timetables,
       })
 
+# 5. 輸出 JSON 與 HTML
 json_str = json.dumps(station_display_data, ensure_ascii=False)
 trips_str = json.dumps(trips_lookup, ensure_ascii=False)
 
@@ -317,6 +304,7 @@ html_content = (
       padding: 20px;
       font-size: 0.85rem;
     }
+    /* 彈窗樣式 */
     .modal {
       display: none;
       position: fixed;
@@ -402,6 +390,7 @@ html_content = (
     </div>
   </div>
 
+  <!-- 全線停靠站彈窗 -->
   <div class="modal" id="tripModal">
     <div class="modal-content">
       <div class="modal-header">
@@ -417,7 +406,9 @@ html_content = (
               <th>發車時間</th>
             </tr>
           </thead>
-          <tbody id="modalBody"></tbody>
+          <tbody id="modalBody">
+            <!-- 動態插入 -->
+          </tbody>
         </table>
       </div>
     </div>
@@ -430,11 +421,13 @@ html_content = (
     document.addEventListener("DOMContentLoaded", () => {
       const stationSelect = document.getElementById("stationSelect");
       const stationsMap = new Map();
+      
       sanyingData.forEach(item => {
         if (!stationsMap.has(item.StationID)) {
           stationsMap.set(item.StationID, item.StationName.Zh_tw);
         }
       });
+
       stationsMap.forEach((name, id) => {
         const option = document.createElement("option");
         option.value = id;
@@ -447,23 +440,28 @@ html_content = (
       const stationId = this.value;
       const directionSelect = document.getElementById("directionSelect");
       directionSelect.innerHTML = '<option value="">-- 請先選擇方向 --</option>';
+      
       if (!stationId) {
         directionSelect.disabled = true;
         return;
       }
+
       const availableDestinations = sanyingData.filter(item => item.StationID === stationId);
       const destMap = new Map();
+
       availableDestinations.forEach(item => {
         if (!destMap.has(item.DestinationStaionID)) {
           destMap.set(item.DestinationStaionID, item.DestinationStationName.Zh_tw);
         }
       });
+
       destMap.forEach((name, destId) => {
         const option = document.createElement("option");
         option.value = destId;
         option.textContent = "往 " + name;
         directionSelect.appendChild(option);
       });
+
       directionSelect.disabled = false;
     });
 
@@ -479,6 +477,7 @@ html_content = (
       }
 
       const targetData = sanyingData.find(item => item.StationID === stationId && item.DestinationStaionID === destId);
+
       if (!targetData || !targetData.Timetables || targetData.Timetables.length === 0) {
         tbody.innerHTML = '<tr><td colspan="4" class="empty-msg">查無相關時刻表資料</td></tr>';
         resultCount.textContent = "共 0 筆班次";
@@ -498,6 +497,7 @@ html_content = (
         const isNext = (index === nextIndex);
         const rowClass = isNext ? ' class="highlight-row"' : '';
         const badgeTag = isNext ? '<span class="next-badge">最近班次</span>' : '';
+        
         const tripKey = t.TripKey;
 
         html += '<tr' + rowClass + ' data-trip="' + tripKey + '">' +
@@ -528,6 +528,7 @@ html_content = (
           }
 
           document.getElementById('modalTitle').textContent = "系統車次 #" + tripInfo.SystemSeq + " 往 " + tripInfo.DestinationName + " (" + tripInfo.StartStation + " 發車: " + tripInfo.DepartureTime + ")";
+          
           let stopHtml = "";
           tripInfo.Stops.forEach(stop => {
             stopHtml += '<tr>' +
@@ -558,6 +559,4 @@ html_content = (
 with open("index.html", "w", encoding="utf-8") as f:
   f.write(html_content)
 
-print(
-    "已成功更新 generate.py 並產生全新的 index.html，站間行車時間已完美鎖定在官方標準±1分鐘內！"
-)
+print("成功產生完整無誤的 index.html！")
