@@ -7,7 +7,7 @@ with open("sanying_timetable.json", "r", encoding="utf-8-sig") as f:
 # 2. 將 Python 物件轉成 JSON 字串
 json_str = json.dumps(full_data, ensure_ascii=False)
 
-# 3. 使用一般字串（不用 f-string），只在需要帶入變數的地方用 .format() 或直接相加
+# 3. 使用一般字串組合網頁內容
 html_content = (
     """<!DOCTYPE html>
 <html lang="zh-TW">
@@ -193,11 +193,20 @@ html_content = (
         return;
       }
 
+      // 取得該車站的所有目的地，並透過 Map 過濾重複項
       const availableDestinations = sanyingData.filter(item => item.StationID === stationId);
+      const destMap = new Map();
+
       availableDestinations.forEach(item => {
+        if (!destMap.has(item.DestinationStaionID)) {
+          destMap.set(item.DestinationStaionID, item.DestinationStationName.Zh_tw);
+        }
+      });
+
+      destMap.forEach((name, destId) => {
         const option = document.createElement("option");
-        option.value = item.DestinationStaionID;
-        option.textContent = "往 " + item.DestinationStationName.Zh_tw;
+        option.value = destId;
+        option.textContent = "往 " + name;
         directionSelect.appendChild(option);
       });
 
