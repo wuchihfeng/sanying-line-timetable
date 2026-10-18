@@ -29,7 +29,7 @@ def time_to_min(t_str):
   return h * 60 + m
 
 
-# 2. 建立全域車站時間索引：station_time_map[station_id][dest_id][dep_time] = 該筆時刻物件
+# 2. 建立全域車站時間索引
 station_time_map = {}
 for station in full_data:
   s_id = station["StationID"]
@@ -42,80 +42,77 @@ for station in full_data:
   for t in station.get("Timetables", []):
     station_time_map[s_id][dest_id][t["DepartureTime"]] = t
 
-# 3. 核心大絕招：以「全線起點站」作為主幹建立系統車次
-# 往鶯桃福德(LB12)的起點是 LB01頂埔；往頂埔(LB01)的起點是 LB12鶯桃福德
-master_trips = {"LB12": [], "LB01": []}
+# 3. 收集全系統所有發車事件，並依照你的黃金規則排序：
+# 規則：先比時間，時間相同則依車站順序（越靠近起點越前面，如頂埔為1號，龍埔為2號）
+events_by_dest = {"LB12": [], "LB01": []}
 
-# 抓取 LB01 往 LB12 的所有發車時間作為主幹 #1
-if "LB01" in station_time_map and "LB12" in station_time_map["LB01"]:
-  lb01_times = sorted(
-      list(station_time_map["LB01"]["LB12"].keys()), key=time_to_min
-  )
-  for idx, dep_t in enumerate(lb01_times):
-    master_trips["LB12"].append({
-        "system_seq": idx + 1,
-        "base_time": dep_t,
-        "dest_id": "LB12",
-        "dest_name": "鶯桃福德",
-    })
+for s_id, s_name in stations_ordered:
+  for dest_id in ["LB12", "LB01"]:
+    if s_id in station_time_map and dest_id in station_time_map[s_id]:
+      for dep_t in station_time_map[s_id][dest_id]:
+        events_by_dest[dest_id].append({
+            "station_id": s_id,
+            "dep_time": dep_t,
+            "dep_min": time_to_min(dep_t),
+            "station_index": station_indices[s_id],
+        })
 
-# 抓取 LB12 往 LB01 的所有發車時間作為主幹 #2
-if "LB12" in station_time_map and "LB01" in station_time_map["LB12"]:
-  lb12_times = sorted(
-      list(station_time_map["LB12"]["LB01"].keys()), key=time_to_min
-  )
-  for idx, dep_t in enumerate(lb12_times):
-    master_trips["LB01"].append({
-        "system_seq": idx + 1,
-        "base_time": dep_t,
-        "dest_id": "LB01",
-        "dest_name": "頂埔",
-    })
-
-# 4. 針對每一個主幹車次，向後/向前分配各站的停靠時間
 trips_lookup = {}
-station_display_data = []
 
-for dest_id, trips in master_trips.items():
-  is_heading_yingge = dest_id == "LB12"
-  check_stations = (
-      stations_ordered if is_heading_yingge else list(reversed(stations_ordered))
-  )
+for dest_id in ["LB12", "LB01"]:
+  events = events_by_dest[dest_id]
+  # 嚴格排序：時間優先，車站順序次之
+  events.sort(key=lambda x: (x["dep_min"], x["station_index"]))
+
   dest_name = "鶯桃福德" if dest_id == "LB12" else "頂埔"
+  is_heading_yingge = dest_id == "LB12"
 
-  for trip in trips:
-    sys_seq = trip["system_seq"]
-    base_time = trip["base_time"]
-    trip_key = f"{dest_id}_{base_time}_{sys_seq}"
+  for idx, ev in enumerate(events):
+    sys_seq = idx + 1
+    s_id = ev["station_id"]
+    dep_t = ev["dep_time"]
 
-    # 從起點時間開始，依序將時間分配到各站
+    # 建立絕對唯一的 TripKey，結合發車車站與時間，絕不混淆！
+    trip_key = f"{dest_id}_{s_id}_{dep_t}_{sys_seq}"
+
+    # 從實際發車車站開始往後抓取各站記錄
+    check_stations = (
+        stations_ordered if is_heading_yingge else list(reversed(stations_ordered))
+    )
+    start_pos = -1
+    for p, (cs_id, _) in enumerate(check_stations):
+      if cs_id == s_id:
+        start_pos = p
+        break
+
     collected_stops = []
-    curr_ref_min = time_to_min(base_time)
+    curr_ref_min = ev["dep_min"]
 
-    for check_s_id, check_s_name in check_stations:
-      if (
-          check_s_id in station_time_map
-          and dest_id in station_time_map[check_s_id]
-      ):
-        dest_t_map = station_time_map[check_s_id][dest_id]
-        # 尋找與當前參考時間最接近且合理的站點紀錄
-        best_match = None
-        min_diff = 999
-        for d_time, d_obj in dest_t_map.items():
-          diff = abs(time_to_min(d_time) - curr_ref_min)
-          if diff < min_diff and diff <= 20:  # 合理站間距容許範圍
-            min_diff = diff
-            best_match = d_obj
+    if start_pos != -1:
+      for p in range(start_pos, len(check_stations)):
+        check_s_id, check_s_name = check_stations[p]
+        if (
+            check_s_id in station_time_map
+            and dest_id in station_time_map[check_s_id]
+        ):
+          dest_t_map = station_time_map[check_s_id][dest_id]
+          best_match = None
+          min_diff = 999
+          for d_time, d_obj in dest_t_map.items():
+            diff = abs(time_to_min(d_time) - curr_ref_min)
+            if diff < min_diff and diff <= 20:
+              min_diff = diff
+              best_match = d_obj
 
-        if best_match:
-          collected_stops.append({
-              "StationID": check_s_id,
-              "StationName": check_s_name,
-              "ArrivalTime": best_match["ArrivalTime"],
-              "DepartureTime": best_match["DepartureTime"],
-              "Index": station_indices[check_s_id],
-          })
-          curr_ref_min = time_to_min(best_match["DepartureTime"])
+          if best_match:
+            collected_stops.append({
+                "StationID": check_s_id,
+                "StationName": check_s_name,
+                "ArrivalTime": best_match["ArrivalTime"],
+                "DepartureTime": best_match["DepartureTime"],
+                "Index": station_indices[check_s_id],
+            })
+            curr_ref_min = time_to_min(best_match["DepartureTime"])
 
     collected_stops.sort(
         key=lambda x: x["Index"],
@@ -125,19 +122,25 @@ for dest_id, trips in master_trips.items():
     trips_lookup[trip_key] = {
         "DestinationName": dest_name,
         "SystemSeq": sys_seq,
-        "DepartureTime": base_time,
+        "DepartureTime": dep_t,
+        "StartStation": station_map.get(s_id, s_id),
         "Stops": [
             {
-                "StationID": s["StationID"],
-                "StationName": s["StationName"],
-                "ArrivalTime": s["ArrivalTime"],
-                "DepartureTime": s["DepartureTime"],
+                "StationID": st["StationID"],
+                "StationName": st["StationName"],
+                "ArrivalTime": st["ArrivalTime"],
+                "DepartureTime": st["DepartureTime"],
             }
-            for s in collected_stops
+            for st in collected_stops
         ],
     }
 
-# 5. 建立各車站的查詢列表
+    ev["trip_key"] = trip_key
+    ev["sys_seq"] = sys_seq
+
+# 4. 建立各車站的查詢列表
+station_display_data = []
+
 for s_id, s_name in stations_ordered:
   for dest_id in ["LB12", "LB01"]:
     if s_id in station_time_map and dest_id in station_time_map[s_id]:
@@ -151,26 +154,19 @@ for s_id, s_name in stations_ordered:
       for t_item_dep in station_deps:
         t_obj = station_time_map[s_id][dest_id][t_item_dep]
 
-        # 尋找這班車對應到哪個主幹系統車次
-        matched_sys_seq = 1
-        matched_base_time = t_item_dep
-        min_time_diff = 999
-
-        for mt in master_trips[dest_id]:
-          # 找發車時間最接近的主幹車次
-          diff = abs(time_to_min(mt["base_time"]) - time_to_min(t_item_dep))
-          if diff < min_time_diff and diff <= 15:
-            min_time_diff = diff
-            matched_sys_seq = mt["system_seq"]
-            matched_base_time = mt["base_time"]
-
-        trip_key = f"{dest_id}_{matched_base_time}_{matched_sys_seq}"
+        matched_trip_key = ""
+        matched_seq = 1
+        for ev in events_by_dest[dest_id]:
+          if ev["station_id"] == s_id and ev["dep_time"] == t_item_dep:
+            matched_trip_key = ev["trip_key"]
+            matched_seq = ev["sys_seq"]
+            break
 
         station_timetables.append({
-            "Sequence": matched_sys_seq,
+            "Sequence": matched_seq,
             "ArrivalTime": t_obj["ArrivalTime"],
             "DepartureTime": t_obj["DepartureTime"],
-            "TripKey": trip_key,
+            "TripKey": matched_trip_key,
         })
 
       station_display_data.append({
@@ -181,7 +177,7 @@ for s_id, s_name in stations_ordered:
           "Timetables": station_timetables,
       })
 
-# 6. 輸出 JSON 與 HTML
+# 5. 輸出 JSON 與 HTML
 json_str = json.dumps(station_display_data, ensure_ascii=False)
 trips_str = json.dumps(trips_lookup, ensure_ascii=False)
 
@@ -527,7 +523,7 @@ html_content = (
             return;
           }
 
-          document.getElementById('modalTitle').textContent = "系統車次 #" + tripInfo.SystemSeq + " 往 " + tripInfo.DestinationName + " (起點發車: " + tripInfo.DepartureTime + ")";
+          document.getElementById('modalTitle').textContent = "系統車次 #" + tripInfo.SystemSeq + " 往 " + tripInfo.DestinationName + " (" + tripInfo.StartStation + " 發車: " + tripInfo.DepartureTime + ")";
           
           let stopHtml = "";
           tripInfo.Stops.forEach(stop => {
@@ -559,4 +555,4 @@ html_content = (
 with open("index.html", "w", encoding="utf-8") as f:
   f.write(html_content)
 
-print("成功產生以起點站為主幹建立車次、再分配至各站的完美 index.html！")
+print("成功修復 TripKey 獨立對應，產生完美的 index.html！")
