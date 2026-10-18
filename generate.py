@@ -7,7 +7,7 @@ with open("sanying_timetable.json", "r", encoding="utf-8-sig") as f:
 # 2. 將 Python 物件轉成 JSON 字串
 json_str = json.dumps(full_data, ensure_ascii=False)
 
-# 3. 組合完整的 HTML 內容（已統一背景、移除邊框與陰影、自適應寬度）
+# 3. 組合完整的 HTML 內容（加入自動比對當前時間、最近班次高亮與自動捲動功能）
 html_content = (
     """<!DOCTYPE html>
 <html lang="zh-TW">
@@ -19,7 +19,7 @@ html_content = (
     * { box-sizing: border-box; }
     body { 
       margin: 0; 
-      background: #1e1e1e; /* 統一背景顏色，消除邊界框線 */
+      background: #1e1e1e; 
       color: #e0e0e0; 
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; 
       display: flex; 
@@ -96,6 +96,14 @@ html_content = (
     .record-table tr:hover {
       background-color: rgba(57, 192, 225, 0.05);
     }
+    /* 最近班次高亮樣式 */
+    .highlight-row {
+      background-color: rgba(57, 192, 225, 0.15) !important;
+    }
+    .highlight-row td {
+      color: #39C0E1 !important;
+      font-weight: bold;
+    }
     .badge {
       background: rgba(57, 192, 225, 0.15);
       color: #39C0E1;
@@ -103,6 +111,15 @@ html_content = (
       border-radius: 4px;
       font-size: 0.75rem;
       font-weight: bold;
+    }
+    .next-badge {
+      background: #39C0E1;
+      color: #121212;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-size: 0.7rem;
+      font-weight: bold;
+      margin-left: 6px;
     }
     .empty-msg {
       text-align: center;
@@ -140,7 +157,7 @@ html_content = (
       <span style="font-size: 0.85rem; color: #aaa;" id="resultCount">尚未查詢</span>
     </div>
     
-    <div class="result-container">
+    <div class="result-container" id="resultContainer">
       <table class="record-table">
         <thead>
           <tr>
@@ -193,7 +210,6 @@ html_content = (
         return;
       }
 
-      // 自動過濾重複的終點站選項
       const availableDestinations = sanyingData.filter(item => item.StationID === stationId);
       const destMap = new Map();
 
@@ -218,6 +234,7 @@ html_content = (
       const destId = document.getElementById("directionSelect").value;
       const tbody = document.getElementById("timetableBody");
       const resultCount = document.getElementById("resultCount");
+      const resultContainer = document.getElementById("resultContainer");
 
       if (!stationId || !destId) {
         alert("請完整選擇車站與方向！");
@@ -232,18 +249,42 @@ html_content = (
         return;
       }
 
+      // 取得目前系統時間 (格式 "HH:MM")
+      const now = new Date();
+      const currentHours = String(now.getHours()).padStart(2, '0');
+      const currentMinutes = String(now.getMinutes()).padStart(2, '0');
+      const currentTimeStr = currentHours + ":" + currentMinutes;
+
+      // 尋找最近的班次索引 (發車時間 >= 當前時間的第一個)
+      let nextIndex = targetData.Timetables.findIndex(t => t.DepartureTime >= currentTimeStr);
+      if (nextIndex === -1) {
+        nextIndex = 0; // 如果今天已經沒有班次，預設指向第一班
+      }
+
       let html = "";
-      targetData.Timetables.forEach(t => {
-        html += '<tr>' +
+      targetData.Timetables.forEach((t, index) => {
+        const isNext = (index === nextIndex);
+        const rowClass = isNext ? ' class="highlight-row"' : '';
+        const badgeTag = isNext ? '<span class="next-badge">最近班次</span>' : '';
+
+        html += '<tr' + rowClass + '>' +
           '<td><span class="badge">#' + t.Sequence + '</span></td>' +
           '<td>' + t.ArrivalTime + '</td>' +
-          '<td><b>' + t.DepartureTime + '</b></td>' +
+          '<td><b>' + t.DepartureTime + '</b>' + badgeTag + '</td>' +
           '<td>' + targetData.DestinationStationName.Zh_tw + '</td>' +
           '</tr>';
       });
 
       tbody.innerHTML = html;
-      resultCount.textContent = "查詢結果：共 " + targetData.Timetables.length + " 筆班次";
+      resultCount.textContent = "查詢結果：共 " + targetData.Timetables.length + " 筆班次 (已自動定位最近班次)";
+
+      // 自動將捲軸滾動到最近班次的列
+      setTimeout(() => {
+        const highlightedRow = tbody.querySelector('.highlight-row');
+        if (highlightedRow) {
+          highlightedRow.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }
+      }, 100);
     });
   </script>
 </body>
@@ -255,4 +296,4 @@ html_content = (
 with open("index.html", "w", encoding="utf-8") as f:
   f.write(html_content)
 
-print("成功產生完美整合、無邊框、自適應的 index.html！")
+print("成功產生具備最近班次自動定位功能的 index.html！")
