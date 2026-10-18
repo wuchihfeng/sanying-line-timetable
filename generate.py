@@ -28,22 +28,28 @@ def time_to_min(t_str):
   return h * 60 + m
 
 
-# 2. 解析單一檔案資料，自動依 ServiceTag 分類平日與例假日
+# 2. 解析單一檔案資料，自動依 ServiceTag 進行強健的平日與例假日分類
 combined_display_data = []
 
 for station in raw_data:
-  # 取得服務日標籤（相容 ServiceTag 或 ServiceDay 結構）
+  # 取得服務日標籤（相容各種 ServiceTag / ServiceDay 結構與命名）
   tag = station.get("ServiceTag")
   if not tag and "ServiceDay" in station:
     if isinstance(station["ServiceDay"], dict):
-      tag = station["ServiceDay"].get("ServiceTag") or station[
-          "ServiceDay"
-      ].get("Name")
+      tag = (
+          station["ServiceDay"].get("ServiceTag")
+          or station["ServiceDay"].get("Name")
+          or station["ServiceDay"].get("Tag")
+      )
     else:
       tag = station["ServiceDay"]
 
-  # 標準化標籤名稱
-  service_tag = "平日" if tag in ["平日", "Weekday", "正常營運日"] else "例假日"
+  # 標準化標籤名稱（將各種可能的寫法統一歸類為「平日」或「例假日」）
+  tag_str = str(tag).strip()
+  if tag_str in ["平日", "Weekday", "正常營運日", "WeekdayOperation"]:
+    service_tag = "平日"
+  else:
+    service_tag = "例假日"  # 包含「假日」、「例假日」、「Weekend」、「Holiday」等
 
   s_id = station.get("StationID")
   s_name = station_map.get(
@@ -52,11 +58,22 @@ for station in raw_data:
       if isinstance(station.get("StationName"), dict)
       else s_id,
   )
-  dest_id = station.get("DestinationStaionID")
+  dest_id = station.get("DestinationStaionID") or station.get(
+      "DestinationStationID"
+  )
   dest_name = (
       "鶯桃福德"
       if dest_id == "LB12"
-      else ("頂埔" if dest_id == "LB01" else dest_id)
+      else (
+          "頂埔"
+          if dest_id == "LB01"
+          else station_map.get(
+              dest_id,
+              station.get("DestinationStationName", {}).get("Zh_tw", dest_id)
+              if isinstance(station.get("DestinationStationName"), dict)
+              else dest_id,
+          )
+      )
   )
 
   # 整理並排序該站該方向的時刻表
@@ -84,7 +101,7 @@ for station in raw_data:
 
 json_str = json.dumps(combined_display_data, ensure_ascii=False)
 
-# 3. 輸出簡化、純時刻表的 HTML 介面
+# 3. 輸出簡化、純時刻表的 HTML 介面（內含強健的前端篩選邏輯）
 html_content = (
     """<!DOCTYPE html>
 <html lang="zh-TW">
@@ -287,13 +304,23 @@ html_content = (
     const allSanyingData = """ + json_str + """;
     let currentServiceTag = "平日";
 
+    // 取得符合當前營運日的資料（相容「例假日」與「假日」寫法）
+    function getFilteredData() {
+      return allSanyingData.filter(item => {
+        if (currentServiceTag === "例假日") {
+          return item.ServiceTag === "例假日" || item.ServiceTag === "假日";
+        }
+        return item.ServiceTag === currentServiceTag;
+      });
+    }
+
     function updateStationOptions() {
       const stationSelect = document.getElementById("stationSelect");
       const currentSelectedStation = stationSelect.value;
       stationSelect.innerHTML = '<option value="">-- 請選擇車站 --</option>';
       
       const stationsMap = new Map();
-      const filteredData = allSanyingData.filter(item => item.ServiceTag === currentServiceTag);
+      const filteredData = getFilteredData();
 
       filteredData.forEach(item => {
         if (!stationsMap.has(item.StationID)) {
@@ -344,7 +371,7 @@ html_content = (
         return;
       }
 
-      const filteredData = allSanyingData.filter(item => item.ServiceTag === currentServiceTag);
+      const filteredData = getFilteredData();
       const availableDestinations = filteredData.filter(item => item.StationID === stationId);
       const destMap = new Map();
 
@@ -375,7 +402,7 @@ html_content = (
         return;
       }
 
-      const filteredData = allSanyingData.filter(item => item.ServiceTag === currentServiceTag);
+      const filteredData = getFilteredData();
       const targetData = filteredData.find(item => item.StationID === stationId && item.DestinationStaionID === destId);
 
       if (!targetData || !targetData.Timetables || targetData.Timetables.length === 0) {
@@ -426,6 +453,5 @@ with open("index.html", "w", encoding="utf-8") as f:
   f.write(html_content)
 
 print(
-    "成功讀取單一檔案 (sanying_timetable.json)，並生成帶有「平日」與「例假日」切換按鈕的"
-    " index.html！"
+    "成功讀取單一檔案，並生成完美的平日與例假日分類與前端互動介面 index.html！"
 )
