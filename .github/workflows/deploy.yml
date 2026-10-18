@@ -1,0 +1,38 @@
+name: 執行 Python 產生三鶯線時刻表網頁
+
+# 啟用手動觸發按鈕 (Workflow Dispatch) 與自動推送觸發
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch: # 讓你在 GitHub 網頁上隨時手動點擊執行
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 簽出專案原始碼
+        uses: actions/checkout@v4
+
+      - name: 設定 Python 環境
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: 安裝相依套件 (若有用到 requests 等請加在此，若純標準庫可略過)
+        run: |
+          pip install requests
+
+      - name: 執行 Python 轉換腳本
+        run: |
+          # 執行你的 Python 程式 (請將 generate.py 換成你實際的 py 檔名)
+          python generate.py
+
+      - name: 自動提交並推送到 gh-pages 分支
+        uses: peaceiris/actions-gh-pages@v3
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: . # 產出的 index.html 所在的資料夾
+          publish_branch: gh-pages
