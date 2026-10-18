@@ -7,7 +7,7 @@ with open("sanying_timetable.json", "r", encoding="utf-8-sig") as f:
 # 2. 將 Python 物件轉成 JSON 字串
 json_str = json.dumps(full_data, ensure_ascii=False)
 
-# 3. 使用一般字串組合網頁內容（已移除邊框、陰影，並調整自適應寬度）
+# 3. 組合完整的 HTML 內容（已統一背景、移除邊框與陰影、自適應寬度）
 html_content = (
     """<!DOCTYPE html>
 <html lang="zh-TW">
@@ -19,23 +19,22 @@ html_content = (
     * { box-sizing: border-box; }
     body { 
       margin: 0; 
-      background: #121212; 
+      background: #1e1e1e; /* 統一背景顏色，消除邊界框線 */
       color: #e0e0e0; 
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; 
       display: flex; 
       justify-content: center; 
-      padding: 0px; /* 移除邊距讓手機端完全自適應貼邊 */
+      padding: 12px; 
       width: 100%;   
       min-height: 100vh;
     }
     .calculator { 
       background: #1e1e1e; 
-      padding: 20px; 
-      border-radius: 0px; /* 若希望完全貼齊可改為 0，若想要微圓角可改 12px */
+      padding: 0px; 
       width: 100%;       
-      max-width: 700px; /* 可依需求調整最大自適應寬度 */
-      border: none; /* 移除外框 */
-      box-shadow: none; /* 移除陰影 */
+      max-width: 700px; 
+      border: none; 
+      box-shadow: none; 
       overflow: hidden;  
     }
     h1 { font-size: 1.25rem; color: #39C0E1; text-align: center; margin: 0 0 15px; }
@@ -194,6 +193,7 @@ html_content = (
         return;
       }
 
+      // 自動過濾重複的終點站選項
       const availableDestinations = sanyingData.filter(item => item.StationID === stationId);
       const destMap = new Map();
 
@@ -255,4 +255,4 @@ html_content = (
 with open("index.html", "w", encoding="utf-8") as f:
   f.write(html_content)
 
-print("成功產生無邊框、自適應寬度的 index.html！")
+print("成功產生完美整合、無邊框、自適應的 index.html！")
