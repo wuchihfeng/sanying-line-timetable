@@ -42,8 +42,8 @@ for station in full_data:
   for t in station.get("Timetables", []):
     station_time_map[s_id][dest_id][t["DepartureTime"]] = t
 
-# 3. 收集全系統所有發車事件，並依照你的黃金規則排序：
-# 規則：先比時間，時間相同則依車站順序（越靠近起點越前面，如頂埔為1號，龍埔為2號）
+# 3. 收集全系統所有發車事件，並依照黃金規則排序：
+# 規則：先比時間，時間相同則依車站順序（越靠近起點越前面）
 events_by_dest = {"LB12": [], "LB01": []}
 
 for s_id, s_name in stations_ordered:
@@ -72,7 +72,7 @@ for dest_id in ["LB12", "LB01"]:
     s_id = ev["station_id"]
     dep_t = ev["dep_time"]
 
-    # 建立絕對唯一的 TripKey，結合發車車站與時間，絕不混淆！
+    # 建立絕對唯一的 TripKey
     trip_key = f"{dest_id}_{s_id}_{dep_t}_{sys_seq}"
 
     # 從實際發車車站開始往後抓取各站記錄
@@ -98,9 +98,13 @@ for dest_id in ["LB12", "LB01"]:
           dest_t_map = station_time_map[check_s_id][dest_id]
           best_match = None
           min_diff = 999
+
+          # 尋找最符合該班次時間遞進的班次（放寬容許誤差至 35 分鐘，避免中斷與時間飄搖）
           for d_time, d_obj in dest_t_map.items():
-            diff = abs(time_to_min(d_time) - curr_ref_min)
-            if diff < min_diff and diff <= 20:
+            d_min = time_to_min(d_time)
+            diff = d_min - curr_ref_min
+            # 必須大於等於當前參考時間（順向行駛），且誤差在合理範圍內
+            if 0 <= diff <= 35 and diff < min_diff:
               min_diff = diff
               best_match = d_obj
 
@@ -555,4 +559,7 @@ html_content = (
 with open("index.html", "w", encoding="utf-8") as f:
   f.write(html_content)
 
-print("成功修復 TripKey 獨立對應，產生完美的 index.html！")
+print(
+    "成功修復串聯斷鍊與時間飄搖問題，已完美產生新的 index.html 與對應邏輯"
+    "！"
+)
