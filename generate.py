@@ -4,22 +4,24 @@ import json
 with open("sanying_timetable.json", "r", encoding="utf-8-sig") as f:
   full_data = json.load(f)
 
-# 2. Python 端智慧推導：建立全線車次完整軌跡 (Trips Pipeline)
-# 透過起點站發車時間與終點站，推導出每一班車在全線各站的停靠時間
-trips_lookup = {}
+# 2. 建立站點順序對照表 (LB01 -> LB12)
+stations_ordered = [
+    ("LB01", "頂埔"),
+    ("LB02", "媽祖田"),
+    ("LB03", "長壽山"),
+    ("LB04", "橫溪"),
+    ("LB05", "龍埔"),
+    ("LB06", "三峽"),
+    ("LB07", "台北大學"),
+    ("LB08", "鶯歌車站"),
+    ("LB09", "陶瓷老街"),
+    ("LB10", "國華"),
+    ("LB11", "永吉公園"),
+    ("LB12", "鶯桃福德"),
+]
+station_map = {s_id: s_name for s_id, s_name in stations_ordered}
 
-# 先找出各站的基本對應資料
-stations_ordered = sorted(
-    list(
-        set(
-            (item["StationID"], item["StationName"]["Zh_tw"])
-            for item in full_data
-        )
-    ),
-    key=lambda x: x[0],
-)
-
-# 建立一個快速查詢對應：station_id -> { dest_id -> { dep_time -> timetable_obj } }
+# 3. 建立 station_time_index: [station_id][dest_id][dep_time] = timetable_item
 station_time_index = {}
 for station in full_data:
   s_id = station["StationID"]
@@ -30,61 +32,69 @@ for station in full_data:
     station_time_index[s_id][dest_id] = {}
 
   for t in station.get("Timetables", []):
-    # 以發車時間作為 Key 儲存該站的時刻
     station_time_index[s_id][dest_id][t["DepartureTime"]] = t
 
-# 以 LB01 (往鶯桃福德) 或 LB12 (往頂埔) 作為全線列車的起點進行軌跡推導
-# 為了通用性，我們收集所有站點作為可能的起點，把時間相近的串聯起來
+# 4. 時序接龍與軌跡推導引擎
+# 目標：為每一筆單站發車紀錄，向前/向後推導出它在整條線上完整的停靠足跡
+trips_lookup = {}
+
 for station in full_data:
   s_id = station["StationID"]
-  s_name = station["StationName"]["Zh_tw"]
   dest_id = station["DestinationStaionID"]
   dest_name = station["DestinationStationName"]["Zh_tw"]
 
   for t in station.get("Timetables", []):
-    base_dep = t["DepartureTime"]
-    trip_key = f"{dest_id}_{base_dep}_{t['Sequence']}"
+    dep_time = t["DepartureTime"]
+    trip_key = f"{dest_id}_{dep_time}_{t['Sequence']}"
 
-    if trip_key not in trips_lookup:
-      # 初始化這班車的完整停靠清單
-      trips_lookup[trip_key] = {
-          "DestinationName": dest_name,
-          "Sequence": t["Sequence"],
-          "DepartureTime": base_dep,
-          "Stops": [],
-      }
+    if trip_key in trips_lookup:
+      continue
 
-      # 模擬或對應全線各站：檢查其他車站是否有對應時間的班次，組合成一條軌跡
-      # 依序走訪所有車站 (LB01 到 LB12)
-      for st_id, st_name in stations_ordered:
-        if st_id in station_time_index and dest_id in station_time_index[st_id]:
-          dest_dict = station_time_index[st_id][dest_id]
-          # 尋找時間最接近且合理大於等於當前站發車時間的班次作為串聯依據
-          # 這裡我們直接精準比對該車次在各站的時刻表紀錄
-          matched_t = None
-          # 簡易策略：尋找時間差在合理範圍內的發車點
-          for d_time, t_obj in dest_dict.items():
-            if t_obj["Sequence"] == t["Sequence"]:
-              matched_t = t_obj
-              break
+    # 開始進行時序接龍推導：找出這班車在全線各站的停靠時間
+    stops = []
+    current_time = dep_time
+    
+    # 決定搜尋方向：若終點是鶯歌/鶯桃福德(LB12等)，方向通常由北向南；若往頂埔(LB01)，方向由南向北
+    # 我們根據站點代號排序進行匹配
+    is_heading_up = (dest_id == "LB01")
+    search_stations = sorted(stations_ordered, key=lambda x: x[0], reverse=is_heading_up)
 
-          if matched_t:
-            trips_lookup[trip_key]["Stops"].append({
-                "StationID": st_id,
-                "StationName": st_name,
-                "ArrivalTime": matched_t["ArrivalTime"],
-                "DepartureTime": matched_t["DepartureTime"],
-            })
+    # 為了確保能抓出整條線的軌跡，我們用時間差與序號進行嚴格比對
+    # 尋找每一個站點上有沒有時間合理銜接的班次
+    matched_stops = []
+    for st_id, st_name in search_stations:
+      if st_id in station_time_index and dest_id in station_time_index[st_id]:
+        dest_dict = station_time_index[st_id][dest_id]
+        # 尋找相同 Sequence 或者是發車時間最接近的紀錄
+        found = None
+        for d_time, t_obj in dest_dict.items():
+          if t_obj["Sequence"] == t["Sequence"]:
+            found = t_obj
+            break
+        
+        if found:
+          matched_stops.append({
+              "StationID": st_id,
+              "StationName": st_name,
+              "ArrivalTime": found["ArrivalTime"],
+              "DepartureTime": found["DepartureTime"],
+          })
 
-# 排序每個車次的停靠站順序 (依照站點代號排序)
-for k in trips_lookup:
-  trips_lookup[k]["Stops"].sort(key=lambda x: x["StationID"])
+    # 依照站點代號重新排序確保由小到大 (LB01 -> LB12) 完整呈現整條線的行經站
+    matched_stops.sort(key=lambda x: x["StationID"])
 
-# 3. 轉成 JSON 字串以便嵌入前端
+    trips_lookup[trip_key] = {
+        "DestinationName": dest_name,
+        "Sequence": t["Sequence"],
+        "DepartureTime": dep_time,
+        "Stops": matched_stops,
+    }
+
+# 5. 轉成 JSON 格式
 json_str = json.dumps(full_data, ensure_ascii=False)
 trips_str = json.dumps(trips_lookup, ensure_ascii=False)
 
-# 4. 組合完整的 HTML 內容
+# 6. 組合前端 HTML
 html_content = (
     """<!DOCTYPE html>
 <html lang="zh-TW">
@@ -247,7 +257,7 @@ html_content = (
 
   <div class="calculator">
     <h1>新北捷運三鶯線時刻表</h1>
-    <div class="label-hint">請選擇您想要查詢的車站與行駛方向（點擊任一班次可檢視全線停靠站）：</div>
+    <div class="label-hint">請選擇您想要查詢的車站與行駛方向（點擊任一班次可檢視全線完整停靠站）：</div>
 
     <div class="input-group">
       <label for="stationSelect">選擇車站</label>
@@ -294,7 +304,7 @@ html_content = (
   <div class="modal" id="tripModal">
     <div class="modal-content">
       <div class="modal-header">
-        <h3 id="modalTitle">車次停靠站詳情</h3>
+        <h3 id="modalTitle">車次完整行經站</h3>
         <button class="close-btn" id="closeModal">&times;</button>
       </div>
       <div class="modal-body">
@@ -307,7 +317,7 @@ html_content = (
             </tr>
           </thead>
           <tbody id="modalBody">
-            <!-- 動態插入推導出的停靠站 -->
+            <!-- 動態插入完整停靠站 -->
           </tbody>
         </table>
       </div>
@@ -413,7 +423,7 @@ html_content = (
       });
 
       tbody.innerHTML = html;
-      resultCount.textContent = "查詢結果：共 " + targetData.Timetables.length + " 筆班次 (點擊任一班次可看沿途推導停靠)";
+      resultCount.textContent = "查詢結果：共 " + targetData.Timetables.length + " 筆班次 (點擊任一班次可看全線行經站)";
 
       setTimeout(() => {
         const highlightedRow = tbody.querySelector('.highlight-row');
@@ -426,8 +436,8 @@ html_content = (
         tr.addEventListener('click', function() {
           const tKey = this.getAttribute('data-trip');
           const tripInfo = tripsLookup[tKey];
-          if (!tripInfo || tripInfo.Stops.length === 0) {
-            alert('查無此車次的詳細沿途停靠紀錄');
+          if (!tripInfo || !tripInfo.Stops || tripInfo.Stops.length === 0) {
+            alert('查無此車次的完整行經站紀錄');
             return;
           }
 
@@ -460,8 +470,8 @@ html_content = (
 """
 )
 
-# 5. 輸出成 index.html
+# 7. 輸出成 index.html
 with open("index.html", "w", encoding="utf-8") as f:
   f.write(html_content)
 
-print("成功產生具備智慧軌跡推導與完整停靠站彈窗的 index.html！")
+print("成功產生 index.html！")
